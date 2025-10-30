@@ -178,6 +178,10 @@ class RelationshipManager:
         # COURSE RELATIONSHIPS (7)
         # ====================================================================
         "Course": [
+            # Note: Profile → Course (ENROLLED_IN) relationship is created implicitly
+            # in the NATS consumer when a Course with student_id is created.
+            # No RelationshipRule needed here.
+
             # Course → Assignment (HAS_ASSIGNMENT)
             RelationshipRule(
                 source_label="Course",

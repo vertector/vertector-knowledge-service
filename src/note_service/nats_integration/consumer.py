@@ -248,6 +248,10 @@ class NATSConsumer:
                 entity_data=entity_data
             )
 
+        # Special handling: If Course has student_id, create implicit ENROLLED_IN relationship
+        if entity_type == "Course" and "student_id" in entity_data:
+            await self._create_enrollment_from_course(entity_data)
+
     async def _process_updated_event(
         self,
         entity_type: str,
@@ -405,6 +409,60 @@ class NATSConsumer:
                     logger.warning(f"Failed to create ENROLLED_IN relationship (Profile or Course may not exist)")
         except Exception as e:
             logger.error(f"Error creating ENROLLED_IN relationship: {e}", exc_info=True)
+            raise
+
+    async def _create_enrollment_from_course(
+        self,
+        course_data: Dict[str, Any]
+    ) -> None:
+        """
+        Create implicit ENROLLED_IN relationship when Course has student_id.
+
+        When Academic Schedule Management creates a Course with student_id,
+        it automatically means the student is enrolled in that course.
+
+        Args:
+            course_data: Course entity data containing student_id and course_id
+        """
+        student_id = course_data.get('student_id')
+        course_id = course_data.get('course_id')
+
+        if not student_id or not course_id:
+            logger.warning(f"Missing student_id or course_id in Course data")
+            return
+
+        logger.info(f"Creating implicit ENROLLED_IN relationship from Course: {student_id} → {course_id}")
+
+        # Create ENROLLED_IN relationship
+        query = """
+        MATCH (p:Profile {student_id: $student_id})
+        MATCH (c:Course {course_id: $course_id})
+        MERGE (p)-[r:ENROLLED_IN]->(c)
+        ON CREATE SET
+            r.enrollment_date = datetime(),
+            r.enrollment_status = 'Active',
+            r.created_at = datetime()
+        RETURN r
+        """
+
+        params = {
+            'student_id': student_id,
+            'course_id': course_id,
+        }
+
+        try:
+            with self.data_adapter.connection.session() as session:
+                result = session.run(query, params)
+                record = result.single()
+                if record:
+                    logger.info(f"✅ Created implicit ENROLLED_IN relationship: {student_id} → {course_id}")
+                else:
+                    logger.warning(
+                        f"Failed to create ENROLLED_IN relationship - Profile {student_id} may not exist yet. "
+                        f"Ensure Profile is created before Course."
+                    )
+        except Exception as e:
+            logger.error(f"Error creating implicit ENROLLED_IN relationship: {e}", exc_info=True)
             raise
 
     async def process_event(self, event_data: Dict[str, Any]) -> None:
