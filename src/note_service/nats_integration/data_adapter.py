@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from ..ingestion.data_loader import DataLoader
+from ..ingestion.relationships import RelationshipManager
 from ..db.connection import Neo4jConnection
 from ..config import Settings
 
@@ -86,10 +87,11 @@ class NATSDataAdapter:
             label=entity_type,
             properties=entity_data,
             id_field=id_field,
-            auto_embed=True
+            auto_embed=True,
+            create_relationships=True  # Explicitly enable automatic relationship creation
         )
 
-        logger.info(f"Successfully created {entity_type}")
+        logger.info(f"Successfully created {entity_type} with relationships")
 
     async def load_entity(
         self,
@@ -121,13 +123,32 @@ class NATSDataAdapter:
             props_str = ", ".join([f"{k}: ${k}" for k in entity_data.keys()])
 
             query = f"""
-                CREATE (n:{entity_type} {{ {props_str} }})
+                MERGE (n:{entity_type} {{{id_field}: $id}})
+                ON CREATE SET n.created_at = datetime()
+                SET n += $properties,
+                    n.updated_at = datetime()
                 RETURN n
             """
 
-            session.run(query, **entity_data)
+            result = session.run(
+                query,
+                id=entity_data[id_field],
+                properties=entity_data
+            )
+            node = result.single()
 
-        logger.info(f"Successfully created {entity_type}")
+            # Create relationships
+            relationship_manager = RelationshipManager(session)
+            created_rels = relationship_manager.create_relationships_for_node(
+                label=entity_type,
+                node_id=entity_data[id_field],
+                id_field=id_field,
+                properties=entity_data
+            )
+            if created_rels:
+                logger.info(f"Created {len(created_rels)} relationship(s) for {entity_type}")
+
+        logger.info(f"Successfully created {entity_type} with relationships")
 
     async def update_entity(
         self,

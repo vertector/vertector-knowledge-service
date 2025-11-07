@@ -35,6 +35,9 @@ dependencies = [
     "typing-extensions>=4.14.1",
     "nats-py>=2.9.0",
     "prometheus-client>=0.21.0",
+
+    # Vertector NATS Client from GitHub
+    "vertector-nats @ git+https://github.com/vertector/vertector-nats.git@main",
 ]
 
 [project.optional-dependencies]
