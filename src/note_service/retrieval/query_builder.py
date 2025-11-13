@@ -99,8 +99,11 @@ class DynamicQueryBuilder:
     def build_hybrid_retrieval_query(
         self,
         user_question: str,
-        initial_node_type: str = "Note",
+        initial_node_type: str = "LectureNote",
         validate: bool = True,
+        filter_topics: list[str] | None = None,
+        filter_tags: list[str] | None = None,
+        require_all: bool = False,
     ) -> QueryGenerationResult:
         """
         Build retrieval_query for HybridCypherRetriever.
@@ -110,14 +113,19 @@ class DynamicQueryBuilder:
 
         Args:
             user_question: User's question to determine what context to retrieve
-            initial_node_type: Type of node from hybrid search (e.g., "Note", "Topic")
+            initial_node_type: Type of node from hybrid search (default: "LectureNote")
             validate: Whether to validate and self-heal the query
+            filter_topics: Optional list of Topic names to filter by
+            filter_tags: Optional list of tags to filter by (from tagged_topics field)
+            require_all: If True, require ALL topics/tags; if False, require ANY
 
         Returns:
             QueryGenerationResult with traversal query
         """
         schema = self.schema_introspector.get_schema()
-        prompt = self._build_hybrid_retrieval_prompt(user_question, initial_node_type, schema)
+        prompt = self._build_hybrid_retrieval_prompt(
+            user_question, initial_node_type, schema, filter_topics, filter_tags, require_all
+        )
 
         logger.info(
             f"Generating hybrid retrieval query for '{user_question}' "
@@ -172,10 +180,37 @@ class DynamicQueryBuilder:
 Generate the Cypher query:"""
 
     def _build_hybrid_retrieval_prompt(
-        self, user_question: str, initial_node_type: str, schema: GraphSchema
+        self,
+        user_question: str,
+        initial_node_type: str,
+        schema: GraphSchema,
+        filter_topics: list[str] | None = None,
+        filter_tags: list[str] | None = None,
+        require_all: bool = False,
     ) -> str:
-        """Build prompt for hybrid retrieval query generation."""
+        """Build prompt for hybrid retrieval query generation with optional topic/tag filtering."""
         schema_text = self.schema_introspector.format_schema_for_llm(schema)
+
+        # Build filter instructions
+        filter_instructions = ""
+        if filter_topics or filter_tags:
+            filter_instructions = "\n## FILTERING REQUIREMENTS\n"
+            if filter_topics:
+                match_logic = "ALL" if require_all else "ANY"
+                topics_str = ", ".join(f"'{t}'" for t in filter_topics)
+                filter_instructions += f"""- MUST filter by topics: {topics_str}
+- Match logic: {match_logic} of the specified topics
+- Use COVERS_TOPIC relationships to filter by Topic nodes
+- Filter pattern: WHERE EXISTS {{ (node)-[:COVERS_TOPIC]->(t:Topic) WHERE t.name IN [{topics_str}] }}
+"""
+            if filter_tags:
+                match_logic = "ALL" if require_all else "ANY"
+                tags_str = ", ".join(f"'{t}'" for t in filter_tags)
+                filter_instructions += f"""- MUST filter by tags from tagged_topics array: {tags_str}
+- Match logic: {match_logic} of the specified tags
+- Use {'ALL' if require_all else 'ANY'} predicate for array filtering
+- Filter pattern: WHERE {'ALL' if require_all else 'ANY'}(tag IN [{tags_str}] WHERE tag IN node.tagged_topics)
+"""
 
         return f"""You are an expert at building Neo4j graph traversal queries for retrieval augmentation.
 
@@ -183,11 +218,11 @@ Generate the Cypher query:"""
 
 ## Task
 Build a Cypher query that traverses from a '{initial_node_type}' node to gather contextually relevant information.
-
+{filter_instructions}
 ## CRITICAL Instructions
 1. The variable 'node' contains a matched {initial_node_type} from hybrid search
 2. The variable 'score' contains the relevance score from hybrid search
-3. You MUST start with OPTIONAL MATCH or WITH to use these variables
+3. You MUST start with WHERE clause for filtering, then OPTIONAL MATCH for traversal
 4. Traverse relationships from 'node' to gather related entities
 5. Use collect(DISTINCT ...) to aggregate related data
 6. ALWAYS end with a RETURN statement - never end with WITH
@@ -295,6 +330,39 @@ MATCH (n1)-[:REFERENCES_NOTE]->(n2:Note)
 RETURN n1.title AS main_note,
        n2.title AS referenced_note,
        n1.created_date AS created,
+       score
+ORDER BY score DESC
+LIMIT 10""",
+            },
+            {
+                "question": "Find notes tagged with 'Neural Networks' or 'Deep Learning'",
+                "query": """CALL db.index.vector.queryNodes('lecture_note_content_vector', $embedding, 20)
+YIELD node, score
+WHERE ANY(tag IN ['neural-networks', 'deep-learning'] WHERE tag IN node.tagged_topics)
+OPTIONAL MATCH (node)-[:COVERS_TOPIC]->(topic:Topic)
+OPTIONAL MATCH (node)-[:BELONGS_TO]->(course:Course)
+RETURN node.title AS note_title,
+       node.summary AS summary,
+       node.tagged_topics AS tags,
+       collect(DISTINCT topic.name) AS topics,
+       collect(DISTINCT course.title) AS courses,
+       score
+ORDER BY score DESC
+LIMIT 10""",
+            },
+            {
+                "question": "Get notes covering BOTH 'CNNs' and 'Computer Vision' topics",
+                "query": """CALL db.index.vector.queryNodes('lecture_note_content_vector', $embedding, 30)
+YIELD node, score
+WHERE EXISTS { (node)-[:COVERS_TOPIC]->(t1:Topic) WHERE t1.name = 'CNNs' }
+  AND EXISTS { (node)-[:COVERS_TOPIC]->(t2:Topic) WHERE t2.name = 'Computer Vision' }
+OPTIONAL MATCH (node)-[:COVERS_TOPIC]->(topic:Topic)
+OPTIONAL MATCH (node)-[:CREATED_BY]->(student:Profile)
+RETURN node.title AS note_title,
+       node.content AS content,
+       node.created_date AS created,
+       collect(DISTINCT topic.name) AS all_topics,
+       student.student_id AS author,
        score
 ORDER BY score DESC
 LIMIT 10""",

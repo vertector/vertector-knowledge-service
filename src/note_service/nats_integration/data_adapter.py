@@ -6,11 +6,14 @@ Provides a clean interface for the NATS consumer to work with.
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 
 from ..ingestion.data_loader import DataLoader
 from ..ingestion.relationships import RelationshipManager
+from ..ingestion.tag_generator import TagGenerationService
+from ..ingestion.topic_extractor import TopicExtractor
 from ..db.connection import Neo4jConnection
 from ..config import Settings
 
@@ -44,8 +47,16 @@ class NATSDataAdapter:
             settings=self.settings
         )
 
+        # Initialize TagGenerationService for auto-generating LectureNote tags
+        self.tag_generator = TagGenerationService()
+
+        # Initialize TopicExtractor for automatic Topic creation and linking
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        self.topic_extractor = TopicExtractor(llm_api_key=google_api_key)
+
         # Entity type to ID field mapping
         self.id_field_map = {
+            "Profile": "student_id",
             "Course": "course_id",
             "Assignment": "assignment_id",
             "Exam": "exam_id",
@@ -54,7 +65,7 @@ class NATSDataAdapter:
             "Study_Todo": "todo_id",
             "Challenge_Area": "challenge_id",
             "Class_Schedule": "schedule_id",
-            "Profile": "student_id",
+            "LectureNote": "lecture_note_id",
         }
 
     async def load_entity_with_embeddings(
@@ -70,6 +81,27 @@ class NATSDataAdapter:
             entity_data: Entity properties
         """
         logger.info(f"Creating {entity_type} with embeddings")
+
+        # Special handling for LectureNote: Auto-generate tagged_topics using LLM
+        if entity_type == "LectureNote":
+            manual_tags = entity_data.get('tagged_topics', [])
+            title = entity_data.get('title', '')
+            content = entity_data.get('content')
+            summary = entity_data.get('summary')
+            key_concepts = entity_data.get('key_concepts')
+
+            # Generate and merge tags (LLM + manual)
+            merged_tags = self.tag_generator.generate_and_merge_tags(
+                manual_tags=manual_tags,
+                title=title,
+                content=content,
+                summary=summary,
+                key_concepts=key_concepts
+            )
+
+            # Update entity_data with merged tags
+            entity_data['tagged_topics'] = merged_tags
+            logger.info(f"Auto-generated tags for LectureNote: {merged_tags}")
 
         # Add timestamps if not present
         if 'created_at' not in entity_data:
@@ -90,6 +122,29 @@ class NATSDataAdapter:
             auto_embed=True,
             create_relationships=True  # Explicitly enable automatic relationship creation
         )
+
+        # Special handling for LectureNote: Automatically create Topic nodes and link them
+        if entity_type == "LectureNote":
+            note_id = entity_data[id_field]
+            tagged_topics = entity_data.get('tagged_topics', [])
+            summary = entity_data.get('summary', '')
+            key_concepts = entity_data.get('key_concepts', '')
+            course_id = entity_data.get('course_id')
+
+            # Combine summary and key_concepts for optional LLM extraction
+            text_content = f"{summary} {key_concepts}".strip() if (summary or key_concepts) else None
+
+            # Extract and link topics (this creates Topic nodes and COVERS_TOPIC relationships)
+            with self.connection.session() as session:
+                topics = self.topic_extractor.extract_and_link(
+                    session=session,
+                    entity_label="LectureNote",
+                    entity_id=note_id,
+                    tagged_topics=tagged_topics,
+                    text_content=text_content,
+                    course_id=course_id
+                )
+                logger.info(f"Automatically linked LectureNote to {len(topics)} topics: {sorted(topics)}")
 
         logger.info(f"Successfully created {entity_type} with relationships")
 

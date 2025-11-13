@@ -100,36 +100,21 @@ ON (cs.format);
 CREATE INDEX schedule_term_dates_composite IF NOT EXISTS
 FOR (cs:Class_Schedule)
 ON (cs.term_start_date, cs.term_end_date);
-CREATE INDEX note_created_date_range IF NOT EXISTS
-FOR (n:Note)
-ON (n.created_date);
-CREATE INDEX note_last_modified_range IF NOT EXISTS
-FOR (n:Note)
-ON (n.last_modified);
-CREATE INDEX note_type_range IF NOT EXISTS
-FOR (n:Note)
-ON (n.note_type);
-CREATE INDEX note_quality_score_range IF NOT EXISTS
-FOR (n:Note)
-ON (n.quality_score);
-CREATE INDEX note_last_reviewed_range IF NOT EXISTS
-FOR (n:Note)
-ON (n.last_reviewed);
-CREATE INDEX note_review_composite IF NOT EXISTS
-FOR (n:Note)
-ON (n.last_reviewed, n.review_count);
-CREATE INDEX lecture_date_range IF NOT EXISTS
-FOR (lec:Lecture)
-ON (lec.date);
-CREATE INDEX lecture_number_range IF NOT EXISTS
-FOR (lec:Lecture)
-ON (lec.lecture_number);
+CREATE INDEX lecture_note_created_date_range IF NOT EXISTS
+FOR (ln:LectureNote)
+ON (ln.created_date);
+CREATE INDEX lecture_note_last_modified_range IF NOT EXISTS
+FOR (ln:LectureNote)
+ON (ln.last_modified);
 CREATE INDEX topic_name_range IF NOT EXISTS
 FOR (t:Topic)
 ON (t.name);
 CREATE INDEX topic_difficulty_range IF NOT EXISTS
 FOR (t:Topic)
 ON (t.difficulty_level);
+CREATE INDEX topic_normalized_name_range IF NOT EXISTS
+FOR (t:Topic)
+ON (t.normalized_name);
 CREATE INDEX resource_type_range IF NOT EXISTS
 FOR (r:Resource)
 ON (r.type);
@@ -142,12 +127,15 @@ ON (c.title);
 CREATE TEXT INDEX course_description_text IF NOT EXISTS
 FOR (c:Course)
 ON (c.description);
-CREATE TEXT INDEX note_title_text IF NOT EXISTS
-FOR (n:Note)
-ON (n.title);
-CREATE TEXT INDEX note_content_text IF NOT EXISTS
-FOR (n:Note)
-ON (n.content);
+CREATE TEXT INDEX lecture_note_title_text IF NOT EXISTS
+FOR (ln:LectureNote)
+ON (ln.title);
+CREATE TEXT INDEX lecture_note_content_text IF NOT EXISTS
+FOR (ln:LectureNote)
+ON (ln.content);
+CREATE TEXT INDEX lecture_note_summary_text IF NOT EXISTS
+FOR (ln:LectureNote)
+ON (ln.summary);
 CREATE TEXT INDEX assignment_title_text IF NOT EXISTS
 FOR (a:Assignment)
 ON (a.title);
@@ -166,9 +154,12 @@ ON (r.title);
 CREATE TEXT INDEX resource_description_text IF NOT EXISTS
 FOR (r:Resource)
 ON (r.description);
-CREATE VECTOR INDEX note_content_vector IF NOT EXISTS
-FOR (n:Note)
-ON n.embedding_vector
+CREATE FULLTEXT INDEX lecture_note_fulltext IF NOT EXISTS
+FOR (ln:LectureNote)
+ON EACH [ln.title, ln.content, ln.summary];
+CREATE VECTOR INDEX lecture_note_content_vector IF NOT EXISTS
+FOR (ln:LectureNote)
+ON ln.embedding_vector
 OPTIONS {
   indexConfig: {
     `vector.dimensions`: 1024,
@@ -187,15 +178,6 @@ OPTIONS {
 CREATE VECTOR INDEX resource_description_vector IF NOT EXISTS
 FOR (r:Resource)
 ON r.embedding_vector
-OPTIONS {
-  indexConfig: {
-    `vector.dimensions`: 1024,
-    `vector.similarity_function`: 'cosine'
-  }
-};
-CREATE VECTOR INDEX lecture_content_vector IF NOT EXISTS
-FOR (lec:Lecture)
-ON lec.embedding_vector
 OPTIONS {
   indexConfig: {
     `vector.dimensions`: 1024,
