@@ -752,6 +752,109 @@ RETURN a, r, t;
 
 
 // ============================================================================
+// CHUNK RELATIONSHIPS
+// ============================================================================
+
+// Chunk -> LectureNote (PART_OF)
+// Links chunks to their parent document for context retrieval
+// NOTE: Created automatically by ChunkGenerator.generate_chunks()
+MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (ln:LectureNote {lecture_note_id: $lecture_note_id})
+MERGE (c)-[r:PART_OF]->(ln)
+ON CREATE SET
+    r.created_at = datetime($created_at)
+RETURN c, r, ln;
+
+// Example parameters:
+// {
+//   "chunk_id": "CHUNK-LN-CS101-S2025001-001-003",
+//   "lecture_note_id": "LN-CS101-S2025001-001",
+//   "created_at": "2025-01-15T10:30:00"
+// }
+
+
+// Chunk -> Chunk (NEXT_CHUNK)
+// Sequential ordering of chunks within a document
+// NOTE: Enables reconstructing document order and retrieving surrounding context
+MATCH (c1:Chunk {chunk_id: $chunk_id})
+MATCH (c2:Chunk {chunk_id: $next_chunk_id})
+MERGE (c1)-[r:NEXT_CHUNK]->(c2)
+ON CREATE SET
+    r.created_at = datetime($created_at)
+RETURN c1, r, c2;
+
+// Example parameters:
+// {
+//   "chunk_id": "CHUNK-LN-CS101-S2025001-001-003",
+//   "next_chunk_id": "CHUNK-LN-CS101-S2025001-001-004",
+//   "created_at": "2025-01-15T10:30:00"
+// }
+
+
+// Chunk -> Topic (COVERS_TOPIC)
+// Links chunks to topics they discuss (inherited from parent or chunk-specific)
+// NOTE: Can be inherited from parent LectureNote or extracted specifically for chunk
+MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (t:Topic {topic_id: $topic_id})
+MERGE (c)-[r:COVERS_TOPIC]->(t)
+ON CREATE SET
+    r.relevance_score = $relevance_score,  // 0.0-1.0: how relevant this topic is to chunk
+    r.inherited = $inherited,  // Boolean: true if inherited from parent, false if chunk-specific
+    r.created_at = datetime($created_at)
+ON MATCH SET
+    r.relevance_score = $relevance_score,
+    r.inherited = $inherited,
+    r.updated_at = datetime()
+RETURN c, r, t;
+
+// Example parameters:
+// {
+//   "chunk_id": "CHUNK-LN-CS101-S2025001-001-003",
+//   "topic_id": "TOPIC-variables",
+//   "relevance_score": 0.95,
+//   "inherited": false,
+//   "created_at": "2025-01-15T10:30:00"
+// }
+
+
+// ============================================================================
+// CHUNK-BASED RETRIEVAL QUERIES
+// ============================================================================
+// Example: Find specific chunks about a topic with parent context
+//
+// MATCH (c:Chunk)-[:COVERS_TOPIC]->(t:Topic {normalized_name: 'variables'})
+// MATCH (c)-[:PART_OF]->(ln:LectureNote)
+// OPTIONAL MATCH (c)-[:NEXT_CHUNK]->(next:Chunk)
+// OPTIONAL MATCH (prev:Chunk)-[:NEXT_CHUNK]->(c)
+// RETURN c.content AS chunk,
+//        c.heading AS section,
+//        c.chunk_index AS position,
+//        ln.title AS parent_title,
+//        ln.lecture_note_id AS parent_id,
+//        prev.content AS previous_chunk,
+//        next.content AS next_chunk
+// ORDER BY c.chunk_index
+//
+// Example: Hybrid chunk + document retrieval
+//
+// CALL db.index.vector.queryNodes('chunk_content_vector', $embedding, 10)
+// YIELD node AS chunk, score
+// MATCH (chunk)-[:PART_OF]->(ln:LectureNote)
+// MATCH (ln)-[:BELONGS_TO]->(course:Course)
+// OPTIONAL MATCH (chunk)-[:COVERS_TOPIC]->(topic:Topic)
+// RETURN chunk.content,
+//        chunk.heading,
+//        chunk.chunk_index,
+//        ln.title AS note_title,
+//        course.title AS course_title,
+//        collect(DISTINCT topic.name) AS topics,
+//        score
+// ORDER BY score DESC
+// LIMIT 5
+// ============================================================================
+
+
+// ============================================================================
 // BATCH RELATIONSHIP CREATION
 // ============================================================================
 // For bulk operations, use UNWIND with CALL { ... } IN TRANSACTIONS

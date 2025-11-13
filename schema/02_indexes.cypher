@@ -157,6 +157,33 @@ ON (r.description);
 CREATE FULLTEXT INDEX lecture_note_fulltext IF NOT EXISTS
 FOR (ln:LectureNote)
 ON EACH [ln.title, ln.content, ln.summary];
+CREATE TEXT INDEX chunk_content_text IF NOT EXISTS
+FOR (c:Chunk)
+ON (c.content);
+CREATE TEXT INDEX chunk_heading_text IF NOT EXISTS
+FOR (c:Chunk)
+ON (c.heading);
+CREATE FULLTEXT INDEX chunk_fulltext IF NOT EXISTS
+FOR (c:Chunk)
+ON EACH [c.content, c.heading, c.summary];
+CREATE INDEX chunk_lecture_note_id_range IF NOT EXISTS
+FOR (c:Chunk)
+ON (c.lecture_note_id);
+CREATE INDEX chunk_index_range IF NOT EXISTS
+FOR (c:Chunk)
+ON (c.chunk_index);
+CREATE INDEX chunk_type_range IF NOT EXISTS
+FOR (c:Chunk)
+ON (c.chunk_type);
+CREATE VECTOR INDEX chunk_content_vector IF NOT EXISTS
+FOR (c:Chunk)
+ON c.embedding_vector
+OPTIONS {
+  indexConfig: {
+    `vector.dimensions`: 1024,
+    `vector.similarity_function`: 'cosine'
+  }
+};
 CREATE VECTOR INDEX lecture_note_content_vector IF NOT EXISTS
 FOR (ln:LectureNote)
 ON ln.embedding_vector

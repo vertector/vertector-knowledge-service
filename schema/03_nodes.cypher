@@ -735,6 +735,68 @@ RETURN t;
 
 
 // ============================================================================
+// CHUNK NODE
+// ============================================================================
+// Represents a semantic chunk/section of a LectureNote for granular retrieval
+// Source: ChunkGenerator service, semantic text splitting
+// Usage: Enables precise paragraph/section-level retrieval instead of full documents
+// Implementation: Automatically created by ChunkGenerator.generate_chunks()
+// ============================================================================
+
+MERGE (c:Chunk {chunk_id: $chunk_id})
+ON CREATE SET
+    c.lecture_note_id = $lecture_note_id,  // Parent LectureNote reference
+    c.content = $content,  // The actual chunk text
+    c.chunk_index = $chunk_index,  // Position in document (0-based)
+
+    // Semantic metadata
+    c.heading = $heading,  // Section heading if available (nullable)
+    c.summary = $summary,  // Optional AI-generated chunk summary
+    c.chunk_type = $chunk_type,  // 'heading', 'paragraph', 'code', 'list', 'table'
+
+    // Positional metadata
+    c.token_count = $token_count,  // Number of tokens in chunk
+    c.char_start = $char_start,  // Start position in parent content
+    c.char_end = $char_end,  // End position in parent content
+
+    // Vector embedding
+    c.embedding_vector = $embedding_vector,  // 1024-dim vector for semantic search
+
+    // Timestamps
+    c.created_at = datetime(),
+    c.updated_at = datetime()
+ON MATCH SET
+    c.content = $content,
+    c.heading = $heading,
+    c.summary = $summary,
+    c.chunk_type = $chunk_type,
+    c.token_count = $token_count,
+    c.char_start = $char_start,
+    c.char_end = $char_end,
+    c.embedding_vector = $embedding_vector,
+    c.updated_at = datetime()
+RETURN c;
+
+// Example parameters:
+// {
+//   "chunk_id": "CHUNK-LN-CS101-S2025001-001-003",
+//   "lecture_note_id": "LN-CS101-S2025001-001",
+//   "content": "Variables are containers for storing data values. In Python, you don't need to declare variables with a specific type...",
+//   "chunk_index": 3,
+//   "heading": "Variables and Data Types",
+//   "summary": "Introduction to variables and type system in Python",
+//   "chunk_type": "paragraph",
+//   "token_count": 150,
+//   "char_start": 450,
+//   "char_end": 850,
+//   "embedding_vector": [0.234, -0.567, ...]  // 1024 dimensions
+// }
+
+// NOTE: Chunks are created automatically by ChunkGenerator when processing LectureNotes
+// Chunking strategy: Semantic splitting by markdown headings with overlap for context preservation
+
+
+// ============================================================================
 // RESOURCE NODE
 // ============================================================================
 // Represents learning resources

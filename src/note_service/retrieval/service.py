@@ -94,35 +94,114 @@ class RetrievalService:
         self,
         query_text: str,
         top_k: int = 10,
+        granularity: Literal["document", "chunk", "auto"] = "document",
         search_type: Literal["hybrid", "vector", "fulltext", "standalone"] = "hybrid",
         initial_node_type: str = "LectureNote",
         filter_topics: list[str] | None = None,
         filter_tags: list[str] | None = None,
         require_all_topics: bool = False,
         topic_boost: float = 1.0,
+        return_parent_context: bool = True,
+        return_surrounding_chunks: bool = False,
     ) -> RetrievalResult:
         """
-        Main search method - dynamically builds and executes retrieval query.
+        Unified search method - supports both document and chunk-level retrieval.
 
         Args:
             query_text: User's natural language question
             top_k: Number of results to return
-            search_type: Type of search to perform
-            initial_node_type: Starting node type for hybrid search (default: LectureNote)
+            granularity: Retrieval granularity:
+                - "document": Return full LectureNotes (traditional behavior)
+                - "chunk": Return specific chunks for precise retrieval
+                - "auto": Automatically choose based on query (future enhancement)
+            search_type: Type of search to perform (hybrid, vector, fulltext, standalone)
+            initial_node_type: Starting node type for document-level search (default: LectureNote)
             filter_topics: List of Topic names to filter by (via COVERS_TOPIC relationships)
             filter_tags: List of tags to filter by (from tagged_topics field)
             require_all_topics: If True, require ALL topics/tags; if False, require ANY (default: False)
-            topic_boost: Score multiplier for topic matches (default: 1.0)
+            topic_boost: Score multiplier for topic matches (document-level only, default: 1.0)
+            return_parent_context: Include parent LectureNote metadata (chunk-level only)
+            return_surrounding_chunks: Include prev/next chunks for context (chunk-level only)
 
         Returns:
             RetrievalResult with query and results
+
+        Examples:
+            >>> # Document-level search (traditional)
+            >>> service.search(
+            ...     query_text="Explain neural networks",
+            ...     granularity="document",
+            ...     top_k=5
+            ... )
+
+            >>> # Chunk-level search (precise)
+            >>> service.search(
+            ...     query_text="How do I declare a variable?",
+            ...     granularity="chunk",
+            ...     top_k=10,
+            ...     return_parent_context=True
+            ... )
+
+            >>> # Topic-filtered chunk search
+            >>> service.search(
+            ...     query_text="explain backpropagation",
+            ...     granularity="chunk",
+            ...     filter_topics=["Neural Networks", "Deep Learning"],
+            ...     require_all_topics=False
+            ... )
         """
         logger.info(
             f"Executing {search_type} search for: '{query_text}' "
-            f"(top_k={top_k}, node_type={initial_node_type}, "
+            f"(granularity={granularity}, top_k={top_k}, node_type={initial_node_type}, "
             f"topics={filter_topics}, tags={filter_tags})"
         )
 
+        # Route to chunk-level search if granularity is "chunk"
+        if granularity == "chunk":
+            if search_type == "standalone":
+                raise ValueError("Standalone search not supported for chunk-level retrieval")
+
+            return self._dispatch_chunk_search(
+                query_text=query_text,
+                top_k=top_k,
+                search_type=search_type,
+                filter_topics=filter_topics,
+                filter_tags=filter_tags,
+                require_all_topics=require_all_topics,
+                return_parent_context=return_parent_context,
+                return_surrounding_chunks=return_surrounding_chunks,
+            )
+
+        # Route to document-level search
+        elif granularity in ("document", "auto"):
+            # Note: "auto" currently defaults to document-level
+            # Future enhancement: use LLM to determine optimal granularity
+            return self._dispatch_document_search(
+                query_text=query_text,
+                top_k=top_k,
+                search_type=search_type,
+                initial_node_type=initial_node_type,
+                filter_topics=filter_topics,
+                filter_tags=filter_tags,
+                require_all_topics=require_all_topics,
+                topic_boost=topic_boost,
+            )
+
+        else:
+            raise ValueError(f"Invalid granularity: {granularity}. Must be 'document', 'chunk', or 'auto'")
+
+    def _dispatch_document_search(
+        self,
+        query_text: str,
+        top_k: int,
+        search_type: str,
+        initial_node_type: str,
+        filter_topics: list[str] | None,
+        filter_tags: list[str] | None,
+        require_all_topics: bool,
+        topic_boost: float,
+    ) -> RetrievalResult:
+        """Internal dispatcher for document-level search."""
         if search_type == "hybrid":
             return self._hybrid_search(
                 query_text, top_k, initial_node_type,
@@ -136,6 +215,45 @@ class RetrievalService:
             return self._standalone_search(query_text)
         else:
             raise ValueError(f"Invalid search_type: {search_type}")
+
+    def _dispatch_chunk_search(
+        self,
+        query_text: str,
+        top_k: int,
+        search_type: str,
+        filter_topics: list[str] | None,
+        filter_tags: list[str] | None,
+        require_all_topics: bool,
+        return_parent_context: bool,
+        return_surrounding_chunks: bool,
+    ) -> RetrievalResult:
+        """Internal dispatcher for chunk-level search."""
+        if search_type == "hybrid":
+            return self._hybrid_chunk_search(
+                query_text,
+                top_k,
+                filter_topics,
+                filter_tags,
+                require_all_topics,
+                return_parent_context,
+                return_surrounding_chunks,
+            )
+        elif search_type == "vector":
+            return self._vector_chunk_search(
+                query_text,
+                top_k,
+                return_parent_context,
+                return_surrounding_chunks,
+            )
+        elif search_type == "fulltext":
+            return self._fulltext_chunk_search(
+                query_text,
+                top_k,
+                return_parent_context,
+                return_surrounding_chunks,
+            )
+        else:
+            raise ValueError(f"Invalid search_type for chunks: {search_type}")
 
     def _hybrid_search(
         self,
@@ -486,3 +604,319 @@ class RetrievalService:
 
         logger.info(f"Found {len(topics)} related topics")
         return topics
+
+    def search_chunks(
+        self,
+        query_text: str,
+        top_k: int = 10,
+        search_type: Literal["hybrid", "vector", "fulltext"] = "hybrid",
+        filter_topics: list[str] | None = None,
+        filter_tags: list[str] | None = None,
+        require_all_topics: bool = False,
+        return_parent_context: bool = True,
+        return_surrounding_chunks: bool = False,
+    ) -> RetrievalResult:
+        """
+        [DEPRECATED] Search for specific chunks instead of full LectureNotes.
+
+        .. deprecated::
+            Use `search(granularity="chunk", ...)` instead. This method is maintained
+            for backwards compatibility but will be removed in a future version.
+
+        Enables precise, paragraph-level retrieval for better context control.
+
+        Args:
+            query_text: User's natural language question
+            top_k: Number of chunks to return
+            search_type: Type of search (hybrid, vector, or fulltext)
+            filter_topics: List of Topic names to filter by
+            filter_tags: List of tags to filter by
+            require_all_topics: If True, require ALL topics; if False, require ANY
+            return_parent_context: Include parent LectureNote metadata
+            return_surrounding_chunks: Include prev/next chunks for context
+
+        Returns:
+            RetrievalResult with chunk-level results
+
+        Example:
+            >>> # Old way (deprecated)
+            >>> service.search_chunks(
+            ...     query="How do I declare a variable in Python?",
+            ...     top_k=5,
+            ...     return_parent_context=True
+            ... )
+            >>>
+            >>> # New way (recommended)
+            >>> service.search(
+            ...     query_text="How do I declare a variable in Python?",
+            ...     granularity="chunk",
+            ...     top_k=5,
+            ...     return_parent_context=True
+            ... )
+        """
+        logger.warning(
+            "search_chunks() is deprecated. Use search(granularity='chunk', ...) instead."
+        )
+
+        # Delegate to unified search interface
+        return self.search(
+            query_text=query_text,
+            top_k=top_k,
+            granularity="chunk",
+            search_type=search_type,
+            filter_topics=filter_topics,
+            filter_tags=filter_tags,
+            require_all_topics=require_all_topics,
+            return_parent_context=return_parent_context,
+            return_surrounding_chunks=return_surrounding_chunks,
+        )
+
+    def _hybrid_chunk_search(
+        self,
+        query_text: str,
+        top_k: int,
+        filter_topics: list[str] | None,
+        filter_tags: list[str] | None,
+        require_all_topics: bool,
+        return_parent_context: bool,
+        return_surrounding_chunks: bool,
+    ) -> RetrievalResult:
+        """Execute hybrid chunk search."""
+        schema = self.schema_introspector.get_schema()
+
+        vector_index = "chunk_content_vector"
+        fulltext_index = "chunk_fulltext"
+
+        # Build retrieval query
+        query = self._build_chunk_retrieval_query(
+            vector_index,
+            fulltext_index,
+            filter_topics,
+            filter_tags,
+            require_all_topics,
+            return_parent_context,
+            return_surrounding_chunks,
+        )
+
+        # Execute hybrid search
+        from neo4j_graphrag.retrievers import HybridRetriever
+
+        # Create hybrid retriever with custom query
+        query_embedding = self.neo4j_embedder.embed_query(query_text)
+
+        with self.driver.session() as session:
+            # Execute hybrid search manually
+            result = session.run(
+                query,
+                query_text=query_text,
+                query_vector=query_embedding,
+                vector_index_name=vector_index,
+                fulltext_index_name=fulltext_index,
+                top_k=top_k,
+            )
+            records = [dict(record) for record in result]
+
+        results = []
+        for record in records:
+            results.append(record)
+
+        logger.info(f"Hybrid chunk search returned {len(results)} results")
+
+        return RetrievalResult(
+            query=query,
+            results=results,
+            num_results=len(results),
+        )
+
+    def _vector_chunk_search(
+        self,
+        query_text: str,
+        top_k: int,
+        return_parent_context: bool,
+        return_surrounding_chunks: bool,
+    ) -> RetrievalResult:
+        """Execute vector-only chunk search."""
+        from neo4j_graphrag.retrievers import VectorRetriever
+
+        retriever = VectorRetriever(
+            driver=self.driver,
+            index_name="chunk_content_vector",
+            embedder=self.neo4j_embedder,
+        )
+
+        search_results = retriever.search(query_text=query_text, top_k=top_k)
+
+        # Enrich with parent context if requested
+        results = []
+        for item in search_results.items:
+            result_dict = {"content": item.content}
+            if item.metadata:
+                result_dict.update(item.metadata)
+
+            if return_parent_context:
+                # Fetch parent LectureNote info
+                chunk_id = result_dict.get("chunk_id")
+                if chunk_id:
+                    parent_info = self._get_parent_context(chunk_id)
+                    result_dict["parent"] = parent_info
+
+            results.append(result_dict)
+
+        query = f"Vector search on chunk_content_vector index"
+        return RetrievalResult(
+            query=query,
+            results=results,
+            num_results=len(results),
+        )
+
+    def _fulltext_chunk_search(
+        self,
+        query_text: str,
+        top_k: int,
+        return_parent_context: bool,
+        return_surrounding_chunks: bool,
+    ) -> RetrievalResult:
+        """Execute fulltext-only chunk search."""
+        query = f"""
+        CALL db.index.fulltext.queryNodes('chunk_fulltext', $query_text)
+        YIELD node AS chunk, score
+        RETURN chunk, score
+        ORDER BY score DESC
+        LIMIT {top_k}
+        """
+
+        with self.driver.session() as session:
+            result = session.run(query, query_text=query_text)
+            records = list(result)
+
+        results = []
+        for record in records:
+            chunk = record["chunk"]
+            result_dict = {
+                "chunk_id": chunk.get("chunk_id"),
+                "content": chunk.get("content"),
+                "heading": chunk.get("heading"),
+                "chunk_index": chunk.get("chunk_index"),
+                "score": record["score"],
+            }
+
+            if return_parent_context:
+                parent_info = self._get_parent_context(chunk.get("chunk_id"))
+                result_dict["parent"] = parent_info
+
+            results.append(result_dict)
+
+        return RetrievalResult(query=query, results=results, num_results=len(results))
+
+    def _build_chunk_retrieval_query(
+        self,
+        vector_index: str,
+        fulltext_index: str,
+        filter_topics: list[str] | None,
+        filter_tags: list[str] | None,
+        require_all_topics: bool,
+        return_parent_context: bool,
+        return_surrounding_chunks: bool,
+    ) -> str:
+        """Build Cypher query for chunk-based hybrid retrieval."""
+        # Base hybrid search
+        query = f"""
+        CALL {{
+            CALL db.index.vector.queryNodes($vector_index_name, $top_k, $query_vector)
+            YIELD node, score
+            WITH collect({{node:node, score:score}}) AS nodes, max(score) AS vector_max_score
+            UNWIND nodes AS n
+            RETURN n.node AS chunk, (n.score / vector_max_score) AS score
+            UNION
+            CALL db.index.fulltext.queryNodes($fulltext_index_name, $query_text)
+            YIELD node, score
+            WITH collect({{node:node, score:score}}) AS nodes, max(score) AS ft_max_score
+            UNWIND nodes AS n
+            RETURN n.node AS chunk, (n.score / ft_max_score) AS score
+        }}
+        WITH chunk, max(score) AS score
+        """
+
+        # Add topic/tag filtering
+        if filter_topics:
+            topics_str = ", ".join(f"'{t}'" for t in filter_topics)
+            if require_all_topics:
+                query += f"\nWHERE ALL(topicName IN [{topics_str}] WHERE EXISTS {{ (chunk)-[:COVERS_TOPIC]->(:Topic {{name: topicName}}) }})"
+            else:
+                query += f"\nWHERE EXISTS {{ (chunk)-[:COVERS_TOPIC]->(t:Topic) WHERE t.name IN [{topics_str}] }}"
+
+        if filter_tags:
+            tags_str = ", ".join(f"'{t}'" for t in filter_tags)
+            logic = "ALL" if require_all_topics else "ANY"
+            tag_filter = f"{logic}(tag IN [{tags_str}] WHERE tag IN chunk.tagged_topics)"
+            if filter_topics:
+                query += f"\n  AND {tag_filter}"
+            else:
+                query += f"\nWHERE {tag_filter}"
+
+        # Add parent context
+        if return_parent_context:
+            query += """
+        MATCH (chunk)-[:PART_OF]->(ln:LectureNote)
+        OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
+        OPTIONAL MATCH (ln)-[:CREATED_BY]->(profile:Profile)
+        OPTIONAL MATCH (chunk)-[:COVERS_TOPIC]->(topic:Topic)
+        """
+
+        # Add surrounding chunks
+        if return_surrounding_chunks:
+            query += """
+        OPTIONAL MATCH (prev:Chunk)-[:NEXT_CHUNK]->(chunk)
+        OPTIONAL MATCH (chunk)-[:NEXT_CHUNK]->(next:Chunk)
+        """
+
+        # Build RETURN clause
+        return_fields = [
+            "chunk.chunk_id AS chunk_id",
+            "chunk.content AS content",
+            "chunk.heading AS heading",
+            "chunk.chunk_index AS chunk_index",
+            "chunk.chunk_type AS chunk_type",
+            "score",
+        ]
+
+        if return_parent_context:
+            return_fields.extend([
+                "ln.lecture_note_id AS parent_id",
+                "ln.title AS parent_title",
+                "course.title AS course_title",
+                "profile.first_name + ' ' + profile.last_name AS author",
+                "collect(DISTINCT topic.name) AS topics",
+            ])
+
+        if return_surrounding_chunks:
+            return_fields.extend([
+                "prev.content AS previous_chunk",
+                "next.content AS next_chunk",
+            ])
+
+        query += f"\nRETURN {', '.join(return_fields)}"
+        query += "\nORDER BY score DESC"
+        query += "\nLIMIT $top_k"
+
+        return query
+
+    def _get_parent_context(self, chunk_id: str) -> dict[str, Any]:
+        """Fetch parent LectureNote context for a chunk."""
+        query = """
+        MATCH (c:Chunk {chunk_id: $chunk_id})-[:PART_OF]->(ln:LectureNote)
+        OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
+        OPTIONAL MATCH (ln)-[:CREATED_BY]->(profile:Profile)
+        RETURN ln.lecture_note_id AS lecture_note_id,
+               ln.title AS title,
+               course.title AS course_title,
+               profile.first_name + ' ' + profile.last_name AS author
+        """
+
+        with self.driver.session() as session:
+            result = session.run(query, chunk_id=chunk_id)
+            record = result.single()
+
+        if record:
+            return dict(record)
+        return {}
