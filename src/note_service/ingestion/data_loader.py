@@ -31,11 +31,9 @@ class DataLoader:
     # Node types that require embeddings
     EMBEDDING_NODE_TYPES = {
         # Original note-taking entities
-        "Note": {"text_fields": ["title", "content"], "vector_field": "embedding_vector"},
+        "LectureNote": {"text_fields": ["title", "content", "summary", "key_concepts"], "vector_field": "embedding_vector"},
         "Topic": {"text_fields": ["name", "description"], "vector_field": "embedding_vector"},
         "Resource": {"text_fields": ["title", "description"], "vector_field": "embedding_vector"},
-        "Lecture": {"text_fields": ["title", "transcript", "key_concepts"], "vector_field": "embedding_vector"},
-        "Challenge_Area": {"text_fields": ["title", "description"], "vector_field": "embedding_vector"},
 
         # Academic entities from NATS integration
         "Course": {"text_fields": ["title", "description", "learning_objectives"], "vector_field": "embedding_vector"},
@@ -50,8 +48,9 @@ class DataLoader:
     # Fulltext index definitions
     FULLTEXT_INDICES = [
         # Original note-taking entities
-        {"name": "note_title_text", "label": "Note", "property": "title"},
-        {"name": "note_content_text", "label": "Note", "property": "content"},
+        {"name": "lecture_note_title_text", "label": "LectureNote", "property": "title"},
+        {"name": "lecture_note_content_text", "label": "LectureNote", "property": "content"},
+        {"name": "lecture_note_summary_text", "label": "LectureNote", "property": "summary"},
         {"name": "topic_name_text", "label": "Topic", "property": "name"},
         {"name": "topic_description_text", "label": "Topic", "property": "description"},
         {"name": "resource_title_text", "label": "Resource", "property": "title"},

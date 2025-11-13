@@ -268,11 +268,13 @@ class RelationshipManager:
                 required=True
             ),
             # Assignment → Topic (COVERS_TOPIC)
+            # NOTE: Uses TopicExtractor service for intelligent topic linking
+            # Handled automatically by data_loader.py when related_topics present
             RelationshipRule(
                 source_label="Assignment",
                 target_label="Topic",
                 relationship_type="COVERS_TOPIC",
-                source_ref_field="topics_covered",  # Array field
+                source_ref_field="related_topics",  # Array field
                 target_id_field="topic_id",
                 properties_mapping={
                     "coverage_percentage": "coverage_percentage",
@@ -321,11 +323,13 @@ class RelationshipManager:
                 required=True
             ),
             # Exam → Topic (COVERS_TOPIC)
+            # NOTE: Uses TopicExtractor service for intelligent topic linking
+            # Handled automatically by data_loader.py when related_topics present
             RelationshipRule(
                 source_label="Exam",
                 target_label="Topic",
                 relationship_type="COVERS_TOPIC",
-                source_ref_field="topics_covered",  # Array field
+                source_ref_field="related_topics",  # Array field
                 target_id_field="topic_id",
                 properties_mapping={
                     "weight": "weight",
@@ -363,11 +367,13 @@ class RelationshipManager:
                 required=True
             ),
             # Quiz → Topic (COVERS_TOPIC)
+            # NOTE: Uses TopicExtractor service for intelligent topic linking
+            # Handled automatically by data_loader.py when related_topics present
             RelationshipRule(
                 source_label="Quiz",
                 target_label="Topic",
                 relationship_type="COVERS_TOPIC",
-                source_ref_field="topics_covered",  # Array field
+                source_ref_field="related_topics",  # Array field
                 target_id_field="topic_id",
                 properties_mapping={
                     "question_count": "question_count",
@@ -525,85 +531,67 @@ class RelationshipManager:
         # ====================================================================
         # LECTURE RELATIONSHIPS (3)
         # ====================================================================
-        "Lecture": [
-            # Lecture → Course (BELONGS_TO)
+        "LectureNote": [
+            # LectureNote → Course (BELONGS_TO)
             RelationshipRule(
-                source_label="Lecture",
+                source_label="LectureNote",
                 target_label="Course",
                 relationship_type="BELONGS_TO",
                 source_ref_field="course_id",
                 target_id_field="course_id",
                 required=True
             ),
-            # Lecture → Topic (COVERED_TOPIC)
+            # LectureNote → Profile (CREATED_BY)
             RelationshipRule(
-                source_label="Lecture",
-                target_label="Topic",
-                relationship_type="COVERED_TOPIC",
-                source_ref_field="topics_covered",  # Array field
-                target_id_field="topic_id",
-                properties_mapping={
-                    "coverage_duration_minutes": "coverage_duration_minutes",
-                    "depth": "depth",
-                },
-                required=False
+                source_label="LectureNote",
+                target_label="Profile",
+                relationship_type="CREATED_BY",
+                source_ref_field="student_id",
+                target_id_field="student_id",
+                required=True
             ),
-            # Lecture → Note (HAS_NOTE)
+            # LectureNote → Topic (COVERS_TOPIC)
+            # NOTE: This creates Topic nodes and relationships automatically
+            # using TopicExtractor when tagged_topics field is present.
+            # Handled by data_loader.py using TopicExtractor service.
+            # Kept here for documentation purposes only - actual creation
+            # happens via TopicExtractor.extract_and_link()
             RelationshipRule(
-                source_label="Lecture",
-                target_label="Note",
-                relationship_type="HAS_NOTE",
-                source_ref_field="lecture_id",
-                target_id_field="related_lecture_id",
-                properties_mapping={
-                    "note_completeness": "note_completeness",
-                },
-                required=False
-            ),
-        ],
-
-        # ====================================================================
-        # NOTE RELATIONSHIPS (3)
-        # ====================================================================
-        "Note": [
-            # Note → Topic (TAGGED_WITH_TOPIC)
-            RelationshipRule(
-                source_label="Note",
+                source_label="LectureNote",
                 target_label="Topic",
-                relationship_type="TAGGED_WITH_TOPIC",
+                relationship_type="COVERS_TOPIC",
                 source_ref_field="tagged_topics",  # Array field
                 target_id_field="topic_id",
                 properties_mapping={
-                    "tag_source": "tag_source",
+                    "importance": "importance",
                     "confidence": "confidence",
                 },
                 required=False
             ),
-            # Note → Note (LINKS_TO_NOTE) - bidirectional
+            # LectureNote → LectureNote (LINKS_TO_NOTE)
             RelationshipRule(
-                source_label="Note",
-                target_label="Note",
+                source_label="LectureNote",
+                target_label="LectureNote",
                 relationship_type="LINKS_TO_NOTE",
-                source_ref_field="linked_notes",  # Array field
-                target_id_field="note_id",
+                source_ref_field="linked_lecture_notes",  # Array field
+                target_id_field="lecture_note_id",
                 properties_mapping={
                     "link_type": "link_type",
-                    "link_strength": "link_strength",
                     "context": "context",
                 },
                 required=False,
-                bidirectional=False  # User controls directionality
+                bidirectional=False
             ),
-            # Note → Resource (CITES_RESOURCE)
+            # LectureNote → Resource (REFERENCES_RESOURCE)
             RelationshipRule(
-                source_label="Note",
+                source_label="LectureNote",
                 target_label="Resource",
-                relationship_type="CITES_RESOURCE",
-                source_ref_field="cited_resources",  # Array field
+                relationship_type="REFERENCES_RESOURCE",
+                source_ref_field="linked_resources",  # Array field with URLs
                 target_id_field="resource_id",
                 properties_mapping={
-                    "citation_type": "citation_type",
-                    "page_numbers": "page_numbers",
+                    "resource_type": "resource_type",  # slides_url, recording_url, additional_material
+                    "url": "url",
                 },
                 required=False
             ),
@@ -926,8 +914,7 @@ class RelationshipManager:
             "Study_Todo": "todo_id",
             "Challenge_Area": "challenge_id",
             "Class_Schedule": "schedule_id",
-            "Lecture": "lecture_id",
-            "Note": "note_id",
+            "LectureNote": "lecture_note_id",
             "Topic": "topic_id",
             "Resource": "resource_id",
         }

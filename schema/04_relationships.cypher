@@ -671,6 +671,87 @@ RETURN t, rel, r;
 
 
 // ============================================================================
+// ACADEMIC ENTITY TOPIC RELATIONSHIPS (TOPIC-BASED LINKING)
+// ============================================================================
+
+// LectureNote -> Topic (COVERS_TOPIC)
+// Links lecture notes to topics they cover via TopicExtractor service
+// NOTE: These relationships are typically created automatically by TopicExtractor.extract_and_link()
+// when processing LectureNotes with tagged_topics field.
+MATCH (ln:LectureNote {lecture_note_id: $lecture_note_id})
+MATCH (t:Topic {topic_id: $topic_id})
+MERGE (ln)-[r:COVERS_TOPIC]->(t)
+ON CREATE SET
+    r.created_at = datetime($created_at)
+RETURN ln, r, t;
+
+// Example parameters:
+// {
+//   "lecture_note_id": "LN-CS101-S2025001-001",
+//   "topic_id": "TOPIC-loops",
+//   "created_at": "2025-01-15T10:30:00"
+// }
+
+
+// Assignment -> Topic (COVERS_TOPIC)
+// Links assignments to topics they assess
+// NOTE: Created automatically by TopicExtractor when related_topics field is present
+MATCH (a:Assignment {assignment_id: $assignment_id})
+MATCH (t:Topic {topic_id: $topic_id})
+MERGE (a)-[r:COVERS_TOPIC]->(t)
+ON CREATE SET
+    r.coverage_percentage = $coverage_percentage,  // Nullable: how much of assignment focuses on this topic
+    r.created_at = datetime($created_at)
+ON MATCH SET
+    r.coverage_percentage = $coverage_percentage,
+    r.updated_at = datetime()
+RETURN a, r, t;
+
+// Example parameters:
+// {
+//   "assignment_id": "A-CS101-S2025-001",
+//   "topic_id": "TOPIC-loops",
+//   "coverage_percentage": 0.60,
+//   "created_at": "2025-01-15T10:30:00"
+// }
+
+
+// Exam -> Topic (COVERS_TOPIC)
+// Already defined above (lines 241-262), but included here for completeness
+// NOTE: Uses 'weight' and 'difficulty' properties instead of 'coverage_percentage'
+
+
+// Quiz -> Topic (COVERS_TOPIC)
+// Already defined above (lines 291-309), but included here for completeness
+// NOTE: Uses 'question_count' property
+
+
+// ============================================================================
+// TOPIC-BASED RETRIEVAL QUERIES
+// ============================================================================
+// Example: Find relevant lecture notes for an assignment
+//
+// MATCH (a:Assignment {assignment_id: 'A-CS101-S2025-001'})
+// MATCH (a)-[:COVERS_TOPIC]->(t:Topic)<-[:COVERS_TOPIC]-(ln:LectureNote)
+// RETURN ln.title, ln.summary, collect(DISTINCT t.name) as shared_topics
+// ORDER BY size(shared_topics) DESC
+//
+// Example: Find all entities linked to a specific topic
+//
+// MATCH (t:Topic {normalized_name: 'machine-learning'})
+// OPTIONAL MATCH (t)<-[:COVERS_TOPIC]-(ln:LectureNote)
+// OPTIONAL MATCH (t)<-[:COVERS_TOPIC]-(a:Assignment)
+// OPTIONAL MATCH (t)<-[:COVERS_TOPIC]-(e:Exam)
+// OPTIONAL MATCH (t)<-[:COVERS_TOPIC]-(q:Quiz)
+// RETURN t.name,
+//        collect(DISTINCT ln.title) as lecture_notes,
+//        collect(DISTINCT a.title) as assignments,
+//        collect(DISTINCT e.title) as exams,
+//        collect(DISTINCT q.title) as quizzes
+// ============================================================================
+
+
+// ============================================================================
 // BATCH RELATIONSHIP CREATION
 // ============================================================================
 // For bulk operations, use UNWIND with CALL { ... } IN TRANSACTIONS

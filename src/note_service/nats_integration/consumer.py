@@ -328,6 +328,7 @@ class NATSConsumer:
         """
         # Map entity type to ID field name
         id_field_map = {
+            "Profile": "student_id",
             "Course": "course_id",
             "Assignment": "assignment_id",
             "Exam": "exam_id",

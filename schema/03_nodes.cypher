@@ -699,46 +699,39 @@ RETURN lec;
 // ============================================================================
 // TOPIC NODE
 // ============================================================================
-// Represents knowledge topics/concepts
-// Source: Knowledge graph structures, curriculum design
+// Represents knowledge topics/concepts for topic-based linking
+// Source: TopicExtractor service, knowledge graph structures
+// Usage: Links LectureNotes, Assignments, Exams, Quizzes via COVERS_TOPIC relationships
+// Implementation: Automatically created by TopicExtractor.create_topic_nodes()
 // ============================================================================
 
 MERGE (t:Topic {topic_id: $topic_id})
 ON CREATE SET
-    t.name = $name,
-    t.description = $description,
-    t.parent_topic_id = $parent_topic_id,  // Nullable (hierarchical)
-    t.difficulty_level = $difficulty_level,  // 'Introductory', 'Intermediate', 'Advanced'
-    t.estimated_study_hours = $estimated_study_hours,
-    t.prerequisite_topics = $prerequisite_topics,  // Array of topic_ids
-    t.keywords = $keywords,  // Array for search
-    t.embedding_vector = $embedding_vector,  // Vector for topic similarity (896 dims)
+    t.name = $name,  // Display name (title-cased, e.g., "Machine Learning")
+    t.normalized_name = $normalized_name,  // Lowercase hyphenated (e.g., "machine-learning")
+    t.description = $description,  // Nullable: detailed description
+    t.usage_count = 1,  // Tracks how many entities link to this topic
     t.created_at = datetime(),
-    t.updated_at = datetime()
+    t.last_used = datetime()
 ON MATCH SET
     t.name = $name,
+    t.normalized_name = $normalized_name,
     t.description = $description,
-    t.parent_topic_id = $parent_topic_id,
-    t.difficulty_level = $difficulty_level,
-    t.estimated_study_hours = $estimated_study_hours,
-    t.prerequisite_topics = $prerequisite_topics,
-    t.keywords = $keywords,
-    t.embedding_vector = $embedding_vector,
-    t.updated_at = datetime()
+    t.usage_count = t.usage_count + 1,  // Increment on each new link
+    t.last_used = datetime()
 RETURN t;
 
 // Example parameters:
 // {
-//   "topic_id": "TOPIC-CNN",
-//   "name": "Convolutional Neural Networks",
-//   "description": "Neural network architecture designed for processing grid-like data such as images",
-//   "parent_topic_id": "TOPIC-DeepLearning",
-//   "difficulty_level": "Intermediate",
-//   "estimated_study_hours": 20,
-//   "prerequisite_topics": ["TOPIC-NeuralNetworks", "TOPIC-LinearAlgebra"],
-//   "keywords": ["CNN", "convolution", "computer vision", "image processing"],
-//   "embedding_vector": [0.567, -0.123, ...]  // 896 dimensions
+//   "topic_id": "TOPIC-machine-learning",
+//   "name": "Machine Learning",
+//   "normalized_name": "machine-learning",
+//   "description": "Algorithms and statistical models that enable systems to improve through experience"
 // }
+
+// NOTE: Topic nodes are typically created automatically by TopicExtractor service
+// when processing LectureNotes, Assignments, Exams, or Quizzes with tagged_topics
+// or related_topics fields. Manual creation is supported but not recommended.
 
 
 // ============================================================================
