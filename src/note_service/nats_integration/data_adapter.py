@@ -14,6 +14,8 @@ from ..ingestion.data_loader import DataLoader
 from ..ingestion.relationships import RelationshipManager
 from ..ingestion.tag_generator import TagGenerationService
 from ..ingestion.topic_extractor import TopicExtractor
+from ..ingestion.chunk_generator import ChunkGenerator
+from ..retrieval.embedder import EmbeddingService
 from ..db.connection import Neo4jConnection
 from ..config import Settings
 
@@ -53,6 +55,23 @@ class NATSDataAdapter:
         # Initialize TopicExtractor for automatic Topic creation and linking
         google_api_key = os.getenv("GOOGLE_API_KEY")
         self.topic_extractor = TopicExtractor(llm_api_key=google_api_key)
+
+        # Initialize ChunkGenerator for automatic chunk creation
+        self.chunk_generator = ChunkGenerator(
+            driver=self.connection.driver,
+            max_chunk_tokens=512,
+            overlap_tokens=50,
+            min_chunk_tokens=25  # Lower threshold to capture smaller semantic chunks
+        )
+
+        # Initialize EmbeddingService for chunk embeddings
+        self.embedding_service = EmbeddingService(
+            model_name=self.settings.embedding.model_name,
+            device=self.settings.embedding.device,
+            cache_folder=self.settings.embedding.cache_folder,
+            normalize_embeddings=self.settings.embedding.normalize_embeddings,
+            batch_size=self.settings.embedding.batch_size,
+        )
 
         # Entity type to ID field mapping
         self.id_field_map = {
@@ -145,6 +164,13 @@ class NATSDataAdapter:
                     course_id=course_id
                 )
                 logger.info(f"Automatically linked LectureNote to {len(topics)} topics: {sorted(topics)}")
+
+            # Automatically generate chunks for the LectureNote
+            await self._generate_chunks_for_note(
+                note_id=note_id,
+                content=entity_data.get('content', ''),
+                title=entity_data.get('title', '')
+            )
 
         logger.info(f"Successfully created {entity_type} with relationships")
 
@@ -363,6 +389,20 @@ class NATSDataAdapter:
             if not result.single():
                 logger.warning(f"{entity_type} {entity_id} not found for soft delete")
 
+            # Automatically clean up orphaned Topics after soft-deleting a LectureNote
+            # Only delete Topics with no active (non-deleted) LectureNote relationships
+            if entity_type == "LectureNote":
+                orphan_cleanup_result = session.run("""
+                    MATCH (t:Topic)
+                    WHERE NOT (t)<-[:COVERS_TOPIC]-(ln:LectureNote)
+                       OR ALL(ln IN [(t)<-[:COVERS_TOPIC]-(ln:LectureNote) | ln] WHERE ln.deleted = true)
+                    DETACH DELETE t
+                    RETURN count(t) as orphaned_topics_deleted
+                """)
+                orphaned_count = orphan_cleanup_result.single()['orphaned_topics_deleted']
+                if orphaned_count > 0:
+                    logger.info(f"Cleaned up {orphaned_count} orphaned Topic(s)")
+
         logger.info(f"Successfully soft deleted {entity_type} {entity_id}")
 
     async def delete_entity(
@@ -396,7 +436,99 @@ class NATSDataAdapter:
             if record and record['deleted_count'] == 0:
                 logger.warning(f"{entity_type} {entity_id} not found for delete")
 
+            # Automatically clean up orphaned Topics after deleting a LectureNote
+            if entity_type == "LectureNote":
+                orphan_cleanup_result = session.run("""
+                    MATCH (t:Topic)
+                    WHERE NOT (t)<-[:COVERS_TOPIC]-(:LectureNote)
+                    DETACH DELETE t
+                    RETURN count(t) as orphaned_topics_deleted
+                """)
+                orphaned_count = orphan_cleanup_result.single()['orphaned_topics_deleted']
+                if orphaned_count > 0:
+                    logger.info(f"Cleaned up {orphaned_count} orphaned Topic(s)")
+
         logger.info(f"Successfully hard deleted {entity_type} {entity_id}")
+
+    async def _generate_chunks_for_note(
+        self,
+        note_id: str,
+        content: str,
+        title: str
+    ) -> int:
+        """
+        Automatically generate chunks for a LectureNote.
+
+        This method is called automatically when a LectureNote is created.
+        It generates semantic chunks, creates embeddings, and saves them to Neo4j.
+
+        Args:
+            note_id: LectureNote ID
+            content: Full content text
+            title: Note title
+
+        Returns:
+            Number of chunks created
+        """
+        if not content or len(content.strip()) == 0:
+            logger.info(f"Skipping chunk generation for {note_id} - no content")
+            return 0
+
+        try:
+            logger.info(f"🔄 Generating chunks for LectureNote {note_id}...")
+
+            # Generate chunks using ChunkGenerator
+            chunks = self.chunk_generator.generate_chunks(
+                lecture_note_id=note_id,
+                content=content,
+                title=title
+            )
+
+            if not chunks:
+                logger.warning(f"No chunks generated for {note_id}")
+                return 0
+
+            logger.info(f"✅ Generated {len(chunks)} chunks for {note_id}")
+
+            # Generate embeddings for all chunks
+            chunk_texts = [chunk.content for chunk in chunks]
+            embeddings = self.embedding_service.embed_documents(
+                chunk_texts,
+                prompt_name="document"
+            )
+
+            # Create embedding vector mapping
+            embedding_vectors = {
+                chunks[i].chunk_id: (
+                    embeddings[i].tolist()
+                    if hasattr(embeddings[i], 'tolist')
+                    else embeddings[i]
+                )
+                for i in range(len(chunks))
+            }
+
+            logger.info(f"✅ Generated {len(embedding_vectors)} embeddings for chunks")
+
+            # Save chunks to Neo4j with embeddings
+            saved_count = self.chunk_generator.save_chunks_to_neo4j(
+                chunks=chunks,
+                embedding_vectors=embedding_vectors
+            )
+
+            logger.info(
+                f"✅ Automatically created {saved_count} chunks with embeddings "
+                f"for LectureNote {note_id}"
+            )
+
+            return saved_count
+
+        except Exception as e:
+            logger.error(
+                f"Failed to generate chunks for LectureNote {note_id}: {e}",
+                exc_info=True
+            )
+            # Don't raise - chunk generation failure shouldn't break note creation
+            return 0
 
     def close(self):
         """Close Neo4j connection."""

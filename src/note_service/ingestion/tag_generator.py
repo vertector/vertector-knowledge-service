@@ -239,3 +239,61 @@ Topic Tags:
 
         logger.info(f"Final merged tags ({len(final_tags)}): {final_tags}")
         return final_tags
+
+    def generate_summary(
+        self,
+        title: str,
+        content: str,
+        max_sentences: int = 3
+    ) -> str:
+        """
+        Generate a concise summary of lecture note content using LLM.
+
+        Args:
+            title: Lecture note title
+            content: Full lecture content
+            max_sentences: Maximum number of sentences in summary
+
+        Returns:
+            Generated summary (empty string if LLM unavailable)
+        """
+        if not self.llm:
+            logger.warning("LLM not available, cannot generate summary")
+            return ""
+
+        if not content or not title:
+            logger.warning("Missing title or content, cannot generate summary")
+            return ""
+
+        # Truncate content to avoid token limits (keep first 2000 chars)
+        truncated_content = content[:2000] if len(content) > 2000 else content
+
+        prompt = f"""Generate a {max_sentences}-sentence summary of this lecture note.
+
+Requirements:
+- Write ONLY the summary, no preamble or labels
+- Use clear, concise academic language
+- Capture the main concepts and learning objectives
+- Maximum {max_sentences} sentences
+
+Title: {title}
+
+Content:
+{truncated_content}
+
+Summary:
+"""
+
+        try:
+            response = self.llm.invoke(prompt)
+            summary = response.content.strip()
+
+            # Remove any "Summary:" prefix if the LLM added it
+            summary = re.sub(r'^(Summary|Overview):\s*', '', summary, flags=re.IGNORECASE)
+
+            logger.info(f"Generated summary ({len(summary)} chars): {summary[:100]}...")
+            return summary
+
+        except Exception as e:
+            logger.error(f"Error generating summary with Gemini: {e}")
+            return ""

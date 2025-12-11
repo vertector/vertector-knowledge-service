@@ -104,6 +104,7 @@ class DynamicQueryBuilder:
         filter_topics: list[str] | None = None,
         filter_tags: list[str] | None = None,
         require_all: bool = False,
+        student_id: str = "",
     ) -> QueryGenerationResult:
         """
         Build retrieval_query for HybridCypherRetriever.
@@ -118,13 +119,14 @@ class DynamicQueryBuilder:
             filter_topics: Optional list of Topic names to filter by
             filter_tags: Optional list of tags to filter by (from tagged_topics field)
             require_all: If True, require ALL topics/tags; if False, require ANY
+            student_id: Filter results to only include notes created by this student (optional)
 
         Returns:
             QueryGenerationResult with traversal query
         """
         schema = self.schema_introspector.get_schema()
         prompt = self._build_hybrid_retrieval_prompt(
-            user_question, initial_node_type, schema, filter_topics, filter_tags, require_all
+            user_question, initial_node_type, schema, filter_topics, filter_tags, require_all, student_id
         )
 
         logger.info(
@@ -187,14 +189,21 @@ Generate the Cypher query:"""
         filter_topics: list[str] | None = None,
         filter_tags: list[str] | None = None,
         require_all: bool = False,
+        student_id: str = "",
     ) -> str:
         """Build prompt for hybrid retrieval query generation with optional topic/tag filtering."""
         schema_text = self.schema_introspector.format_schema_for_llm(schema)
 
         # Build filter instructions
         filter_instructions = ""
-        if filter_topics or filter_tags:
+        if filter_topics or filter_tags or student_id:
             filter_instructions = "\n## FILTERING REQUIREMENTS\n"
+            if student_id:
+                filter_instructions += f"""- CRITICAL: MUST filter by student ownership using student_id: '{student_id}'
+- Only return notes created by this student
+- Use CREATED_NOTE relationship: WHERE EXISTS {{ (p:Profile)-[:CREATED_NOTE]->(node) WHERE p.student_id = '{student_id}' }}
+- This filter is MANDATORY for user data privacy
+"""
             if filter_topics:
                 match_logic = "ALL" if require_all else "ANY"
                 topics_str = ", ".join(f"'{t}'" for t in filter_topics)
@@ -228,33 +237,35 @@ Build a Cypher query that traverses from a '{initial_node_type}' node to gather 
 6. ALWAYS end with a RETURN statement - never end with WITH
 7. Return node properties and related context as named fields
 8. Include 'score' in the RETURN clause
-9. Return ONLY the Cypher query without explanations, markdown, or code blocks
+9. MUST include the node's primary ID field in RETURN (e.g., node.lecture_note_id, node.course_id, node.profile_id)
+10. Return ONLY the Cypher query without explanations, markdown, or code blocks
 
-## Example for Note node
+## Example for LectureNote node
 ```
-OPTIONAL MATCH (node)-[:TAGGED_WITH_TOPIC]->(topic:Topic)
-OPTIONAL MATCH (topic)<-[:COVERS_TOPIC]-(course:Course)
-OPTIONAL MATCH (node)<-[:HAS_NOTE]-(lecture:Lecture)
-RETURN node.title AS note_title,
-       node.content AS content,
-       node.created_date AS created,
-       collect(DISTINCT topic.name) AS topics,
-       collect(DISTINCT course.title) AS courses,
-       collect(DISTINCT lecture.title) AS lectures,
+OPTIONAL MATCH (node)-[:CREATED_BY]->(profile:Profile)
+OPTIONAL MATCH (node)-[:BELONGS_TO]->(course:Course)
+OPTIONAL MATCH (node)<-[:PART_OF]-(chunk:Chunk)
+RETURN node.lecture_note_id AS lecture_note_id,
+       node.title AS lecture_note_title,
+       node.content AS lecture_note_content,
+       node.summary AS lecture_note_summary,
+       node.key_concepts AS key_concepts,
+       node.tagged_topics AS tagged_topics,
+       collect(DISTINCT profile.first_name + ' ' + profile.last_name) AS created_by_student,
+       collect(DISTINCT course.title) AS belongs_to_courses,
+       collect(DISTINCT chunk.content) AS related_chunks_content,
        score
 ```
 
-## Example for Topic node
+## Example for Course node
 ```
-OPTIONAL MATCH (node)<-[:TAGGED_WITH_TOPIC]-(note:Note)
-OPTIONAL MATCH (node)<-[:COVERS_TOPIC]-(course:Course)
-OPTIONAL MATCH (node)-[:PREREQUISITE_FOR]->(prereq:Topic)
-RETURN node.name AS topic_name,
-       node.description AS description,
-       node.difficulty_level AS difficulty,
-       collect(DISTINCT note.title) AS related_notes,
-       collect(DISTINCT course.title) AS courses,
-       collect(DISTINCT prereq.name) AS prerequisites,
+OPTIONAL MATCH (node)<-[:BELONGS_TO]-(note:LectureNote)
+OPTIONAL MATCH (node)<-[:ENROLLED_IN]-(student:Profile)
+RETURN node.course_id AS course_id,
+       node.title AS course_title,
+       node.description AS course_description,
+       collect(DISTINCT note.title) AS lecture_notes,
+       collect(DISTINCT student.email) AS enrolled_students,
        score
 ```
 

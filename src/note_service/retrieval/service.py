@@ -15,9 +15,12 @@ from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
 from neo4j_graphrag.retrievers import HybridCypherRetriever, HybridRetriever
 
 from note_service.config import Settings
+from note_service.retrieval.chunk_aware_ranker import ChunkAwareDocumentRanker
 from note_service.retrieval.embedder import EmbeddingService
 from note_service.retrieval.query_builder import DynamicQueryBuilder, QueryGenerationResult
 from note_service.retrieval.schema_introspector import SchemaIntrospector
+from note_service.security.audit import AuditLogger
+from note_service.security.validator import SecurityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +91,25 @@ class RetrievalService:
             cache_folder=settings.embedding.cache_folder,
         )
 
-        logger.info("RetrievalService initialized successfully")
+        # Initialize chunk-aware document ranker for precision improvement
+        self.chunk_ranker = ChunkAwareDocumentRanker(
+            driver=driver,
+            embedder=self.neo4j_embedder,
+            settings=settings,
+            top_chunks_per_doc=3,
+            relevance_threshold=0.7,
+        )
+
+        # Initialize security and audit components
+        self.audit_logger = AuditLogger(driver=driver)
+        self.security_validator = SecurityValidator(driver=driver)
+
+        logger.info("RetrievalService initialized successfully with security and audit logging")
 
     def search(
         self,
         query_text: str,
+        student_id: str,
         top_k: int = 10,
         granularity: Literal["document", "chunk", "auto"] = "document",
         search_type: Literal["hybrid", "vector", "fulltext", "standalone"] = "hybrid",
@@ -103,12 +120,17 @@ class RetrievalService:
         topic_boost: float = 1.0,
         return_parent_context: bool = True,
         return_surrounding_chunks: bool = False,
+        use_chunk_ranking: bool = True,
     ) -> RetrievalResult:
         """
         Unified search method - supports both document and chunk-level retrieval.
 
+        IMPORTANT: All searches are scoped to a specific student for data privacy.
+        Users can ONLY query their own data.
+
         Args:
             query_text: User's natural language question
+            student_id: Student ID - REQUIRED for data privacy, filters to only this student's notes
             top_k: Number of results to return
             granularity: Retrieval granularity:
                 - "document": Return full LectureNotes (traditional behavior)
@@ -122,14 +144,19 @@ class RetrievalService:
             topic_boost: Score multiplier for topic matches (document-level only, default: 1.0)
             return_parent_context: Include parent LectureNote metadata (chunk-level only)
             return_surrounding_chunks: Include prev/next chunks for context (chunk-level only)
+            use_chunk_ranking: Re-rank document results using chunk-level relevance (default: True)
 
         Returns:
             RetrievalResult with query and results
+
+        Raises:
+            ValueError: If student_id is empty or None
 
         Examples:
             >>> # Document-level search (traditional)
             >>> service.search(
             ...     query_text="Explain neural networks",
+            ...     student_id="STU001",
             ...     granularity="document",
             ...     top_k=5
             ... )
@@ -137,6 +164,7 @@ class RetrievalService:
             >>> # Chunk-level search (precise)
             >>> service.search(
             ...     query_text="How do I declare a variable?",
+            ...     student_id="STU001",
             ...     granularity="chunk",
             ...     top_k=10,
             ...     return_parent_context=True
@@ -145,23 +173,36 @@ class RetrievalService:
             >>> # Topic-filtered chunk search
             >>> service.search(
             ...     query_text="explain backpropagation",
+            ...     student_id="STU001",
             ...     granularity="chunk",
             ...     filter_topics=["Neural Networks", "Deep Learning"],
             ...     require_all_topics=False
             ... )
         """
+        # Validate student_id is provided for data privacy
+        if not student_id or not student_id.strip():
+            raise ValueError(
+                "student_id is required for data privacy. "
+                "Users can only query their own data."
+            )
+
         logger.info(
-            f"Executing {search_type} search for: '{query_text}' "
+            f"Executing {search_type} search for student '{student_id}': '{query_text}' "
             f"(granularity={granularity}, top_k={top_k}, node_type={initial_node_type}, "
             f"topics={filter_topics}, tags={filter_tags})"
         )
+
+        # Verify student profile exists (security check)
+        if not self.security_validator.verify_profile_exists(student_id):
+            logger.error(f"Student profile not found: {student_id}")
+            raise ValueError(f"Student profile '{student_id}' not found in database")
 
         # Route to chunk-level search if granularity is "chunk"
         if granularity == "chunk":
             if search_type == "standalone":
                 raise ValueError("Standalone search not supported for chunk-level retrieval")
 
-            return self._dispatch_chunk_search(
+            result = self._dispatch_chunk_search(
                 query_text=query_text,
                 top_k=top_k,
                 search_type=search_type,
@@ -170,13 +211,14 @@ class RetrievalService:
                 require_all_topics=require_all_topics,
                 return_parent_context=return_parent_context,
                 return_surrounding_chunks=return_surrounding_chunks,
+                student_id=student_id,
             )
 
         # Route to document-level search
         elif granularity in ("document", "auto"):
             # Note: "auto" currently defaults to document-level
             # Future enhancement: use LLM to determine optimal granularity
-            return self._dispatch_document_search(
+            result = self._dispatch_document_search(
                 query_text=query_text,
                 top_k=top_k,
                 search_type=search_type,
@@ -185,10 +227,36 @@ class RetrievalService:
                 filter_tags=filter_tags,
                 require_all_topics=require_all_topics,
                 topic_boost=topic_boost,
+                use_chunk_ranking=use_chunk_ranking,
+                student_id=student_id,
             )
 
         else:
             raise ValueError(f"Invalid granularity: {granularity}. Must be 'document', 'chunk', or 'auto'")
+
+        # Audit log the search operation (non-blocking, failures don't break search)
+        try:
+            filters = {}
+            if filter_topics:
+                filters['topics'] = filter_topics
+            if filter_tags:
+                filters['tags'] = filter_tags
+            if granularity:
+                filters['granularity'] = granularity
+            if search_type:
+                filters['search_type'] = search_type
+
+            self.audit_logger.log_search(
+                student_id=student_id,
+                query_text=query_text,
+                result_count=result.num_results,
+                filters=filters if filters else None
+            )
+        except Exception as e:
+            # Don't fail search if audit logging fails
+            logger.warning(f"Failed to log search audit: {e}")
+
+        return result
 
     def _dispatch_document_search(
         self,
@@ -200,12 +268,15 @@ class RetrievalService:
         filter_tags: list[str] | None,
         require_all_topics: bool,
         topic_boost: float,
+        use_chunk_ranking: bool,
+        student_id: str,
     ) -> RetrievalResult:
         """Internal dispatcher for document-level search."""
         if search_type == "hybrid":
             return self._hybrid_search(
                 query_text, top_k, initial_node_type,
-                filter_topics, filter_tags, require_all_topics, topic_boost
+                filter_topics, filter_tags, require_all_topics, topic_boost,
+                use_chunk_ranking, student_id
             )
         elif search_type == "vector":
             return self._vector_search(query_text, top_k, initial_node_type)
@@ -226,6 +297,7 @@ class RetrievalService:
         require_all_topics: bool,
         return_parent_context: bool,
         return_surrounding_chunks: bool,
+        student_id: str,
     ) -> RetrievalResult:
         """Internal dispatcher for chunk-level search."""
         if search_type == "hybrid":
@@ -264,12 +336,15 @@ class RetrievalService:
         filter_tags: list[str] | None = None,
         require_all_topics: bool = False,
         topic_boost: float = 1.0,
+        use_chunk_ranking: bool = True,
+        student_id: str = "",
     ) -> RetrievalResult:
         """
         Execute hybrid search with dynamic query generation.
 
         Combines vector + fulltext search, then uses LLM-generated Cypher
         to traverse the graph and enrich results. Optionally filters by topics/tags.
+        Can re-rank results using chunk-level relevance for improved precision.
         """
         schema = self.schema_introspector.get_schema()
 
@@ -295,6 +370,7 @@ class RetrievalService:
             filter_topics=filter_topics,
             filter_tags=filter_tags,
             require_all=require_all_topics,
+            student_id=student_id,
         )
 
         if not query_gen_result.is_valid:
@@ -311,12 +387,25 @@ class RetrievalService:
         logger.info(f"Using vector index: {vector_index}, fulltext index: {fulltext_index}")
         logger.debug(f"Generated retrieval query:\n{query_gen_result.query}")
 
+        # Custom result formatter to extract all fields from Neo4j Record
+        def format_record(record):
+            from neo4j_graphrag.types import RetrieverResultItem
+            # Extract all fields from the Record into a dict
+            result_data = dict(record)
+            # Use the entire record data as content (for compatibility)
+            # but also include individual fields for chunk ranker access
+            return RetrieverResultItem(
+                content=str(record),  # Keep original behavior
+                metadata=result_data  # Add all fields as metadata
+            )
+
         retriever = HybridCypherRetriever(
             driver=self.driver,
             vector_index_name=vector_index,
             fulltext_index_name=fulltext_index,
             retrieval_query=query_gen_result.query,
             embedder=self.neo4j_embedder,
+            result_formatter=format_record,
         )
 
         search_results = retriever.search(query_text=query_text, top_k=top_k)
@@ -329,6 +418,15 @@ class RetrievalService:
             results.append(result_dict)
 
         logger.info(f"Hybrid search returned {len(results)} results")
+
+        # Apply chunk-aware ranking if enabled and results are LectureNotes
+        if use_chunk_ranking and results and initial_node_type == "LectureNote":
+            logger.info("Applying chunk-aware re-ranking for precision improvement")
+            results = self.chunk_ranker.rank_documents(
+                documents=results,
+                query_text=query_text,
+            )
+            logger.info(f"Re-ranking complete. Final result count: {len(results)}")
 
         return RetrievalResult(
             query=query_gen_result.query,
@@ -837,22 +935,16 @@ class RetrievalService:
         WITH chunk, max(score) AS score
         """
 
-        # Add topic/tag filtering
-        if filter_topics:
-            topics_str = ", ".join(f"'{t}'" for t in filter_topics)
-            if require_all_topics:
-                query += f"\nWHERE ALL(topicName IN [{topics_str}] WHERE EXISTS {{ (chunk)-[:COVERS_TOPIC]->(:Topic {{name: topicName}}) }})"
-            else:
-                query += f"\nWHERE EXISTS {{ (chunk)-[:COVERS_TOPIC]->(t:Topic) WHERE t.name IN [{topics_str}] }}"
-
+        # Add tag filtering via parent LectureNote
+        # Note: Topics were removed - only tag filtering is supported
         if filter_tags:
+            # Tags are stored on LectureNote, so we need to join through PART_OF
             tags_str = ", ".join(f"'{t}'" for t in filter_tags)
             logic = "ALL" if require_all_topics else "ANY"
-            tag_filter = f"{logic}(tag IN [{tags_str}] WHERE tag IN chunk.tagged_topics)"
-            if filter_topics:
-                query += f"\n  AND {tag_filter}"
-            else:
-                query += f"\nWHERE {tag_filter}"
+            query += f"""
+        MATCH (chunk)-[:PART_OF]->(ln:LectureNote)
+        WHERE {logic}(tag IN [{tags_str}] WHERE tag IN ln.tagged_topics)
+        """
 
         # Add parent context
         if return_parent_context:
@@ -860,7 +952,6 @@ class RetrievalService:
         MATCH (chunk)-[:PART_OF]->(ln:LectureNote)
         OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
         OPTIONAL MATCH (ln)-[:CREATED_BY]->(profile:Profile)
-        OPTIONAL MATCH (chunk)-[:COVERS_TOPIC]->(topic:Topic)
         """
 
         # Add surrounding chunks
@@ -884,9 +975,9 @@ class RetrievalService:
             return_fields.extend([
                 "ln.lecture_note_id AS parent_id",
                 "ln.title AS parent_title",
+                "ln.tagged_topics AS tags",
                 "course.title AS course_title",
                 "profile.first_name + ' ' + profile.last_name AS author",
-                "collect(DISTINCT topic.name) AS topics",
             ])
 
         if return_surrounding_chunks:

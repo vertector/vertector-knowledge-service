@@ -93,17 +93,20 @@ class ChunkGenerator:
             logger.info("No markdown structure found, using fixed-size chunking")
             chunks = self._fixed_size_chunking(content)
 
+        # Merge small chunks into adjacent chunks to prevent data loss
+        merged_chunks = self._merge_small_chunks(chunks)
+
         # Create Chunk objects with metadata
         chunk_objects = []
         char_position = 0
+        actual_index = 0  # Use separate counter for sequential indexing
 
-        for idx, (chunk_content, heading, chunk_type) in enumerate(chunks):
+        for (chunk_content, heading, chunk_type) in merged_chunks:
             chunk_content = chunk_content.strip()
-            if not chunk_content or self._estimate_tokens(chunk_content) < self.min_chunk_tokens:
-                logger.debug(f"Skipping small chunk {idx}: {len(chunk_content)} chars")
+            if not chunk_content:
                 continue
 
-            chunk_id = self._generate_chunk_id(lecture_note_id, idx)
+            chunk_id = self._generate_chunk_id(lecture_note_id, actual_index)
             token_count = self._estimate_tokens(chunk_content)
 
             # Find actual position in original content
@@ -117,7 +120,7 @@ class ChunkGenerator:
                 chunk_id=chunk_id,
                 lecture_note_id=lecture_note_id,
                 content=chunk_content,
-                chunk_index=idx,
+                chunk_index=actual_index,  # Sequential index
                 heading=heading,
                 chunk_type=chunk_type,
                 token_count=token_count,
@@ -127,6 +130,7 @@ class ChunkGenerator:
 
             chunk_objects.append(chunk)
             char_position = end_pos
+            actual_index += 1  # Increment for next chunk
 
         logger.info(f"Generated {len(chunk_objects)} chunks for {lecture_note_id}")
         return chunk_objects
@@ -220,6 +224,103 @@ class ChunkGenerator:
             start = end - self.overlap_tokens
 
         return chunks
+
+    def _merge_small_chunks(
+        self,
+        chunks: list[tuple[str, str | None, str]]
+    ) -> list[tuple[str, str | None, str]]:
+        """
+        Merge small chunks into adjacent chunks to prevent data loss.
+
+        Strategy:
+        - If chunk < min_chunk_tokens, merge with previous chunk
+        - If no previous chunk, merge with next chunk
+        - Preserve heading from the larger chunk
+        - Never discard content
+
+        Args:
+            chunks: List of (content, heading, chunk_type) tuples
+
+        Returns:
+            Merged list with no small chunks (or single small chunk if that's all there is)
+        """
+        if not chunks:
+            return []
+
+        # If only one chunk, keep it regardless of size
+        if len(chunks) == 1:
+            return chunks
+
+        merged = []
+        i = 0
+
+        while i < len(chunks):
+            current_content, current_heading, current_type = chunks[i]
+            current_tokens = self._estimate_tokens(current_content)
+
+            # If current chunk is large enough, keep it as-is
+            if current_tokens >= self.min_chunk_tokens:
+                merged.append((current_content, current_heading, current_type))
+                i += 1
+                continue
+
+            # Current chunk is too small - need to merge
+            logger.debug(
+                f"Small chunk detected ({current_tokens} tokens < {self.min_chunk_tokens}): "
+                f"'{current_content[:50]}...'"
+            )
+
+            # Strategy: Try to merge with previous chunk first (if exists)
+            if merged:
+                # Merge with previous chunk
+                prev_content, prev_heading, prev_type = merged[-1]
+
+                # Concatenate content with newline separator
+                merged_content = f"{prev_content}\n\n{current_content}"
+
+                # Keep heading from the larger chunk
+                if current_tokens > self._estimate_tokens(prev_content):
+                    merged_heading = current_heading
+                else:
+                    merged_heading = prev_heading
+
+                # Update the previous chunk in merged list
+                merged[-1] = (merged_content, merged_heading, prev_type)
+
+                logger.debug(f"Merged small chunk into previous chunk")
+                i += 1
+
+            else:
+                # No previous chunk - try to merge with next chunk
+                if i + 1 < len(chunks):
+                    next_content, next_heading, next_type = chunks[i + 1]
+
+                    # Concatenate content with newline separator
+                    merged_content = f"{current_content}\n\n{next_content}"
+
+                    # Keep heading from the larger chunk
+                    next_tokens = self._estimate_tokens(next_content)
+                    if current_tokens > next_tokens:
+                        merged_heading = current_heading
+                    else:
+                        merged_heading = next_heading
+
+                    # Add merged chunk and skip next iteration
+                    merged.append((merged_content, merged_heading, next_type))
+                    logger.debug(f"Merged small chunk with next chunk")
+                    i += 2  # Skip both current and next
+
+                else:
+                    # Only chunk left and it's small - keep it anyway
+                    merged.append((current_content, current_heading, current_type))
+                    logger.debug(f"Keeping small chunk as it's the only/last one")
+                    i += 1
+
+        logger.info(
+            f"Merged {len(chunks)} chunks into {len(merged)} chunks "
+            f"(avoided losing {len(chunks) - len(merged)} small chunks)"
+        )
+        return merged
 
     def _estimate_tokens(self, text: str) -> int:
         """

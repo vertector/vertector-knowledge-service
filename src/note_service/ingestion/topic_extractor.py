@@ -261,13 +261,17 @@ Topics:"""
             all_topics.update(text_topics)
             logger.debug(f"Extracted {len(text_topics)} topics from text")
 
-        # Link to topics
+        # Link to topics with specificity property
         if all_topics:
+            # Automatically determine specificity based on entity type
+            specificity = "chunk" if entity_label == "Chunk" else "document"
+
             self.link_entity_to_topics(
                 session=session,
                 entity_label=entity_label,
                 entity_id=entity_id,
-                topics=all_topics
+                topics=all_topics,
+                properties={"specificity": specificity}
             )
 
         return all_topics
