@@ -63,15 +63,26 @@ class RelationshipManager:
     RELATIONSHIP_RULES: Dict[str, List[RelationshipRule]] = {
 
         # ====================================================================
-        # PROFILE RELATIONSHIPS (8 - Course + Student Work Tracking)
+        # PROFILE RELATIONSHIPS (1 - Course-Centric Architecture)
+        # ====================================================================
+        # Profile ONLY connects to Course. All academic entities (Assignment, Exam,
+        # Quiz, Lab, Todo, Challenge, Note) are accessed via multi-hop queries:
+        # Profile → ENROLLED_IN → Course → HAS_ASSIGNMENT → Assignment
+        # Profile → ENROLLED_IN → Course → HAS_EXAM → Exam
+        # etc.
         # ====================================================================
         "Profile": [
-            # Profile → Course (ENROLLED_IN)
+            # Profile → Course (ENROLLED_IN) - THE ONLY DIRECT PROFILE RELATIONSHIP
+            # This is created automatically by the NATS consumer when:
+            # 1. Profile receives "academic.profile.enrolled" event
+            # 2. Course is created with a student_id property
+            # Note: This rule allows "enrolled_courses" array field, but NATS consumer
+            # handles enrollment via events primarily
             RelationshipRule(
                 source_label="Profile",
                 target_label="Course",
                 relationship_type="ENROLLED_IN",
-                source_ref_field="enrolled_courses",  # Array field
+                source_ref_field="enrolled_courses",  # Array field (if present)
                 target_id_field="course_id",
                 properties_mapping={
                     "enrollment_date": "enrollment_date",
@@ -80,96 +91,6 @@ class RelationshipManager:
                     "letter_grade": "letter_grade",
                     "grading_basis": "grading_basis",
                 },
-                required=False
-            ),
-            # Profile → Assignment (HAS_SUBMISSION)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Assignment",
-                relationship_type="HAS_SUBMISSION",
-                source_ref_field="student_id",
-                target_id_field="student_id",
-                properties_mapping={
-                    "submission_date": "submission_date",
-                    "status": "status",
-                    "grade": "grade",
-                    "feedback": "feedback",
-                },
-                required=False
-            ),
-            # Profile → Exam (TOOK_EXAM)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Exam",
-                relationship_type="TOOK_EXAM",
-                source_ref_field="student_id",
-                target_id_field="student_id",
-                properties_mapping={
-                    "exam_date": "exam_date",
-                    "score": "score",
-                    "grade": "grade",
-                    "completion_time": "completion_time",
-                },
-                required=False
-            ),
-            # Profile → Quiz (TOOK_QUIZ)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Quiz",
-                relationship_type="TOOK_QUIZ",
-                source_ref_field="student_id",
-                target_id_field="student_id",
-                properties_mapping={
-                    "quiz_date": "quiz_date",
-                    "score": "score",
-                    "time_taken": "time_taken",
-                },
-                required=False
-            ),
-            # Profile → Lab_Session (ATTENDED_LAB)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Lab_Session",
-                relationship_type="ATTENDED_LAB",
-                source_ref_field="student_id",
-                target_id_field="lab_id",
-                properties_mapping={
-                    "attendance_date": "attendance_date",
-                    "participation_score": "participation_score",
-                    "completed": "completed",
-                },
-                required=False
-            ),
-            # Profile → Study_Todo (HAS_TODO)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Study_Todo",
-                relationship_type="HAS_TODO",
-                source_ref_field="student_id",
-                target_id_field="student_id",
-                required=False
-            ),
-            # Profile → Challenge_Area (FACES_CHALLENGE)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Challenge_Area",
-                relationship_type="FACES_CHALLENGE",
-                source_ref_field="student_id",
-                target_id_field="student_id",
-                properties_mapping={
-                    "first_detected": "first_detected",
-                    "current_severity": "current_severity",
-                    "intervention_count": "intervention_count",
-                },
-                required=False
-            ),
-            # Profile → Note (CREATED_NOTE)
-            RelationshipRule(
-                source_label="Profile",
-                target_label="Note",
-                relationship_type="CREATED_NOTE",
-                source_ref_field="student_id",
-                target_id_field="student_id",
                 required=False
             ),
         ],
@@ -529,25 +450,19 @@ class RelationshipManager:
         ],
 
         # ====================================================================
-        # LECTURE RELATIONSHIPS (3)
+        # LECTURE NOTE RELATIONSHIPS (Course-Centric Architecture)
+        # ====================================================================
+        # LectureNote connects to Course. Profile accesses notes via:
+        # Profile → ENROLLED_IN → Course → BELONGS_TO (reverse) → LectureNote
         # ====================================================================
         "LectureNote": [
-            # LectureNote → Course (BELONGS_TO)
+            # LectureNote → Course (BELONGS_TO) - REQUIRED
             RelationshipRule(
                 source_label="LectureNote",
                 target_label="Course",
                 relationship_type="BELONGS_TO",
                 source_ref_field="course_id",
                 target_id_field="course_id",
-                required=True
-            ),
-            # LectureNote → Profile (CREATED_BY)
-            RelationshipRule(
-                source_label="LectureNote",
-                target_label="Profile",
-                relationship_type="CREATED_BY",
-                source_ref_field="student_id",
-                target_id_field="student_id",
                 required=True
             ),
             # LectureNote → Topic (COVERS_TOPIC)

@@ -88,6 +88,7 @@ services:
       - ./logs:/app/logs
     networks:
       - graphrag-network
+      - vertector-nats-jetstream_microservices  # Connect to NATS network
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -109,3 +110,5 @@ networks:
   graphrag-network:
     driver: bridge
     name: graphrag-network
+  vertector-nats-jetstream_microservices:
+    external: true  # Reference external NATS network
