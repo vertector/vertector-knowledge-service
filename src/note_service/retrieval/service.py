@@ -351,6 +351,71 @@ class RetrievalService:
         vector_index = self._find_vector_index_for_node(initial_node_type, schema)
         fulltext_index = self._find_fulltext_index_for_node(initial_node_type, schema)
 
+        # For LectureNote: Use chunk-level hybrid search instead of direct vector search
+        # This leverages our chunk embeddings for better semantic matching
+        # Then aggregate chunks to parent documents for document-level results
+        if not vector_index and initial_node_type == "LectureNote" and use_chunk_ranking:
+            logger.info(
+                f"Using chunk-based hybrid search for {initial_node_type} (chunk embeddings available)"
+            )
+            # First, get top chunks using chunk-level search
+            chunk_results = self._hybrid_chunk_search(
+                query_text=query_text,
+                top_k=top_k * 3,  # Get more chunks to ensure good document coverage
+                filter_topics=filter_topics,
+                filter_tags=filter_tags,
+                require_all_topics=require_all_topics,
+                return_parent_context=True,
+                return_surrounding_chunks=False,
+            )
+
+            # Aggregate chunks to parent documents (best score per document)
+            doc_scores = {}
+            for result in chunk_results.results:
+                parent_id = result.get('parent_id')
+                score = result.get('score', 0)
+                if parent_id:
+                    if parent_id not in doc_scores or score > doc_scores[parent_id]['score']:
+                        doc_scores[parent_id] = {
+                            'parent_id': parent_id,
+                            'parent_title': result.get('parent_title'),
+                            'course_title': result.get('course_title'),
+                            'tags': result.get('tags'),
+                            'score': score
+                        }
+
+            # Sort by score and return top_k documents
+            aggregated_docs = sorted(doc_scores.values(), key=lambda x: x['score'], reverse=True)[:top_k]
+
+            # Fetch full document content for top results
+            document_results = []
+            if aggregated_docs:
+                with self.driver.session() as session:
+                    for doc in aggregated_docs:
+                        result = session.run(
+                            """
+                            MATCH (ln:LectureNote {lecture_note_id: $parent_id})
+                            OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
+                            RETURN ln, course.title AS course_title
+                            """,
+                            parent_id=doc['parent_id']
+                        )
+                        record = result.single()
+                        if record:
+                            node_data = dict(record['ln'])
+                            node_data['course_title'] = record['course_title']
+                            document_results.append({
+                                'node': node_data,
+                                'score': doc['score']
+                            })
+
+            return RetrievalResult(
+                query=query_text,
+                results=document_results,
+                num_results=len(document_results),
+                query_generation=None
+            )
+
         if not vector_index:
             logger.warning(
                 f"No vector index found for {initial_node_type}, falling back to fulltext"
@@ -919,7 +984,7 @@ class RetrievalService:
         """Build Cypher query for chunk-based hybrid retrieval."""
         # Base hybrid search
         query = f"""
-        CALL {{
+        CALL () {{
             CALL db.index.vector.queryNodes($vector_index_name, $top_k, $query_vector)
             YIELD node, score
             WITH collect({{node:node, score:score}}) AS nodes, max(score) AS vector_max_score
@@ -951,7 +1016,6 @@ class RetrievalService:
             query += """
         MATCH (chunk)-[:PART_OF]->(ln:LectureNote)
         OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
-        OPTIONAL MATCH (ln)-[:CREATED_BY]->(profile:Profile)
         """
 
         # Add surrounding chunks
@@ -965,9 +1029,6 @@ class RetrievalService:
         return_fields = [
             "chunk.chunk_id AS chunk_id",
             "chunk.content AS content",
-            "chunk.heading AS heading",
-            "chunk.chunk_index AS chunk_index",
-            "chunk.chunk_type AS chunk_type",
             "score",
         ]
 
@@ -977,7 +1038,6 @@ class RetrievalService:
                 "ln.title AS parent_title",
                 "ln.tagged_topics AS tags",
                 "course.title AS course_title",
-                "profile.first_name + ' ' + profile.last_name AS author",
             ])
 
         if return_surrounding_chunks:
@@ -997,11 +1057,9 @@ class RetrievalService:
         query = """
         MATCH (c:Chunk {chunk_id: $chunk_id})-[:PART_OF]->(ln:LectureNote)
         OPTIONAL MATCH (ln)-[:BELONGS_TO]->(course:Course)
-        OPTIONAL MATCH (ln)-[:CREATED_BY]->(profile:Profile)
         RETURN ln.lecture_note_id AS lecture_note_id,
                ln.title AS title,
-               course.title AS course_title,
-               profile.first_name + ' ' + profile.last_name AS author
+               course.title AS course_title
         """
 
         with self.driver.session() as session:

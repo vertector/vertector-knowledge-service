@@ -242,7 +242,6 @@ Build a Cypher query that traverses from a '{initial_node_type}' node to gather 
 
 ## Example for LectureNote node
 ```
-OPTIONAL MATCH (node)-[:CREATED_BY]->(profile:Profile)
 OPTIONAL MATCH (node)-[:BELONGS_TO]->(course:Course)
 OPTIONAL MATCH (node)<-[:PART_OF]-(chunk:Chunk)
 RETURN node.lecture_note_id AS lecture_note_id,
@@ -251,7 +250,6 @@ RETURN node.lecture_note_id AS lecture_note_id,
        node.summary AS lecture_note_summary,
        node.key_concepts AS key_concepts,
        node.tagged_topics AS tagged_topics,
-       collect(DISTINCT profile.first_name + ' ' + profile.last_name) AS created_by_student,
        collect(DISTINCT course.title) AS belongs_to_courses,
        collect(DISTINCT chunk.content) AS related_chunks_content,
        score
@@ -368,12 +366,10 @@ YIELD node, score
 WHERE EXISTS { (node)-[:COVERS_TOPIC]->(t1:Topic) WHERE t1.name = 'CNNs' }
   AND EXISTS { (node)-[:COVERS_TOPIC]->(t2:Topic) WHERE t2.name = 'Computer Vision' }
 OPTIONAL MATCH (node)-[:COVERS_TOPIC]->(topic:Topic)
-OPTIONAL MATCH (node)-[:CREATED_BY]->(student:Profile)
 RETURN node.title AS note_title,
        node.content AS content,
        node.created_date AS created,
        collect(DISTINCT topic.name) AS all_topics,
-       student.student_id AS author,
        score
 ORDER BY score DESC
 LIMIT 10""",
@@ -469,7 +465,7 @@ LIMIT 10""",
             # It performs vector + fulltext search, normalizes scores, and provides
             # 'node' and 'score' variables to the retrieval_query
             test_query = f"""
-            CALL {{
+            CALL () {{
                 CALL db.index.vector.queryNodes($vector_index_name, 1, $query_vector)
                 YIELD node, score
                 WITH collect({{node:node, score:score}}) AS nodes, max(score) AS vector_index_max_score

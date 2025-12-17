@@ -196,7 +196,7 @@ class ChunkAwareDocumentRanker:
 
         # Hybrid search query for chunks from a specific parent document
         chunk_query = """
-        CALL {
+        CALL () {
             CALL db.index.vector.queryNodes($vector_index_name, $top_k, $query_vector)
             YIELD node, score
             WITH collect({node:node, score:score}) AS nodes, max(score) AS vector_max_score
@@ -215,7 +215,6 @@ class ChunkAwareDocumentRanker:
 
         RETURN chunk.chunk_id AS chunk_id,
                chunk.content AS content,
-               chunk.heading AS heading,
                score
         ORDER BY score DESC
         LIMIT $top_k
