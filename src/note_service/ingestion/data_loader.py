@@ -18,6 +18,7 @@ from note_service.ingestion.relationships import RelationshipManager
 from note_service.ingestion.chunk_generator import ChunkGenerator
 from note_service.ingestion.tag_generator import TagGenerationService
 from note_service.ingestion.id_generator import IDGenerator
+from note_service.ingestion.lexical_graph_manager import LexicalGraphManager, LectureNoteLexicalGraphConfig
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class DataLoader:
             normalize_embeddings=settings.embedding.normalize_embeddings,
             batch_size=settings.embedding.batch_size,
         )
-        # Initialize ChunkGenerator for automatic chunk creation
+        # Initialize ChunkGenerator for automatic chunk creation (DEPRECATED - use LexicalGraphManager)
         self.chunk_generator = ChunkGenerator(
             driver=self.connection.driver,
             max_chunk_tokens=512,
@@ -102,6 +103,17 @@ class DataLoader:
         )
         # Initialize TagGenerationService for auto-generating LectureNote tags
         self.tag_generator = TagGenerationService()
+
+        # Initialize Neo4j GraphRAG LexicalGraphManager for official Document/Chunk structure
+        lexical_config = LectureNoteLexicalGraphConfig(
+            chunk_size=500,  # 500 characters per chunk (smaller than default 4000)
+            chunk_overlap=100,  # 100 character overlap
+        )
+        self.lexical_graph_manager = LexicalGraphManager(
+            driver=self.connection.driver,
+            embedding_service=self.embedder,
+            config=lexical_config
+        )
 
     def ensure_indices_exist(self):
         """Ensure all required fulltext and vector indices exist."""
@@ -245,7 +257,47 @@ class DataLoader:
         elif auto_embed:
             logger.warning(f"{label} not in EMBEDDING_NODE_TYPES - skipping embedding generation")
 
-        # Create or update node
+        # Special handling for LectureNote: Create via lexical graph (Document + Chunks)
+        # instead of standard node creation to avoid duplicates
+        if label == "LectureNote":
+            import asyncio
+            node_id = properties[id_field]
+
+            # Create lexical graph (Document node + Chunk nodes)
+            asyncio.run(self._generate_lexical_graph_for_lecture_note(
+                lecture_note_id=node_id,
+                content=properties.get('content', ''),
+                title=properties.get('title', ''),
+                properties=properties
+            ))
+
+            # Add relationships (e.g., BELONGS_TO course) to the Document node created by lexical graph
+            if create_relationships:
+                with self.connection.session() as session:
+                    relationship_manager = RelationshipManager(session)
+                    created_rels = relationship_manager.create_relationships_for_node(
+                        label=label,
+                        node_id=node_id,
+                        id_field=id_field,
+                        properties=properties
+                    )
+                    if created_rels:
+                        logger.info(f"Created {len(created_rels)} relationship(s) for {label} {node_id}")
+
+            # Return a dict representation (fetch the created Document node)
+            with self.connection.session() as session:
+                result = session.run(
+                    f"MATCH (n:{label} {{{id_field}: $id}}) RETURN n LIMIT 1",
+                    id=node_id
+                )
+                record = result.single()
+                if record:
+                    return dict(record["n"])
+                else:
+                    logger.warning(f"LectureNote {node_id} not found after lexical graph creation")
+                    return properties
+
+        # Standard node creation for all other labels
         with self.connection.session() as session:
             result = session.run(
                 f"""
@@ -273,14 +325,6 @@ class DataLoader:
                 )
                 if created_rels:
                     logger.info(f"Created {len(created_rels)} relationship(s) for {label} {node_id}")
-
-        # Special handling for LectureNote: Automatically generate chunks
-        if label == "LectureNote":
-            self._generate_chunks_for_lecture_note(
-                note_id=node_id,
-                content=properties.get('content', ''),
-                title=properties.get('title', '')
-            )
 
         return dict(node)
 
@@ -398,6 +442,48 @@ class DataLoader:
 
         # Generate embedding
         return self.embedder.embed_query(combined_text)
+
+    async def _generate_lexical_graph_for_lecture_note(
+        self,
+        lecture_note_id: str,
+        content: str,
+        title: str,
+        properties: dict[str, Any]
+    ) -> int:
+        """
+        Generate lexical graph (Document + Chunks) for a LectureNote using Neo4j GraphRAG.
+
+        Uses official Neo4j GraphRAG components:
+        - FixedSizeSplitter for text chunking
+        - TextChunkEmbedder for embeddings
+        - LexicalGraphBuilder for graph structure
+
+        Args:
+            lecture_note_id: LectureNote ID
+            content: Full content text
+            title: Note title
+            properties: All LectureNote properties
+
+        Returns:
+            Number of chunks created
+        """
+        if not content or len(content.strip()) == 0:
+            logger.info(f"Skipping lexical graph generation for {lecture_note_id} - no content")
+            return 0
+
+        try:
+            chunk_count = await self.lexical_graph_manager.create_lexical_graph_for_lecture_note(
+                lecture_note_id=lecture_note_id,
+                content=content,
+                title=title,
+                properties=properties
+            )
+            logger.info(f"✅ Created lexical graph with {chunk_count} chunks for {lecture_note_id}")
+            return chunk_count
+
+        except Exception as e:
+            logger.error(f"Error creating lexical graph for {lecture_note_id}: {e}", exc_info=True)
+            raise
 
     def _generate_chunks_for_lecture_note(
         self,

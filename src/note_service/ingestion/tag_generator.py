@@ -4,7 +4,7 @@ Tag Generation Service for LectureNotes
 ============================================================================
 Automatically generates topic tags for LectureNotes using LLM.
 Merges LLM-generated tags with any manually provided tags.
-Uses Google Gemini 2.5 Flash Lite for fast, efficient tag generation.
+Uses Qwen3-VL:2B via ChatOllama for local tag generation.
 ============================================================================
 """
 
@@ -13,7 +13,7 @@ import os
 import re
 from typing import List, Optional
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 
 logger = logging.getLogger(__name__)
 
@@ -23,45 +23,41 @@ class TagGenerationService:
     Service for automatically generating topic tags for LectureNotes using LLM.
 
     Features:
-    - LLM-powered tag extraction from lecture content using Gemini 2.5 Flash Lite
-    - API-based inference with generous rate limits
+    - LLM-powered tag extraction from lecture content using Qwen3-VL:2B
+    - Local inference via Ollama (no API limits)
     - Merges auto-generated tags with manual tags
     - Normalizes tags to consistent format (lowercase, hyphenated)
-    - Graceful fallback if API is unavailable
+    - Graceful fallback if Ollama is unavailable
     """
 
-    def __init__(self, google_api_key: Optional[str] = None, max_tags: int = 8):
+    def __init__(self, ollama_base_url: Optional[str] = None, max_tags: int = 8):
         """
-        Initialize tag generation service with Gemini 2.5 Flash Lite.
+        Initialize tag generation service with Qwen3-VL:2B via Ollama.
 
         Args:
-            google_api_key: Google API key for Gemini (defaults to env var)
+            ollama_base_url: Ollama API base URL (defaults to http://localhost:11434)
             max_tags: Maximum number of tags to generate
         """
         self.max_tags = max_tags
         self.llm = None
 
-        # Get API key from parameter or environment
-        api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
-
-        if not api_key:
-            logger.warning("GOOGLE_API_KEY not provided. Tag generation will be disabled.")
-            return
+        # Get Ollama base URL from parameter or environment
+        base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         try:
-            logger.info("Initializing Gemini 2.5 Flash Lite for tag generation...")
+            logger.info("Initializing Qwen3-VL:2B via Ollama for tag generation...")
 
-            # Initialize Gemini 2.5 Flash Lite model
-            self.llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash-lite",
-                google_api_key=api_key,
+            # Initialize Qwen3-VL:2B model via Ollama
+            self.llm = ChatOllama(
+                model="qwen3-vl:2b",
+                base_url=base_url,
                 temperature=0.3,
-                max_output_tokens=150,
+                num_predict=150,
             )
 
-            logger.info("✅ TagGenerationService initialized with Gemini 2.5 Flash Lite")
+            logger.info("✅ TagGenerationService initialized with Qwen3-VL:2B (Ollama)")
         except Exception as e:
-            logger.warning(f"Failed to initialize LLM: {e}. Tag generation will be disabled.")
+            logger.warning(f"Failed to initialize Ollama LLM: {e}. Tag generation will be disabled.")
             self.llm = None
 
     def normalize_tag(self, tag: str) -> str:
