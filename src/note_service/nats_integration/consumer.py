@@ -218,6 +218,14 @@ class NATSConsumer:
             if k not in ['event_id', 'event_type', 'event_version', 'timestamp', 'metadata']
         }
 
+        # CRITICAL: Extract student_id from metadata.user_id for data isolation and linking
+        # ASMS publishes student_id in metadata.user_id since CourseCreatedEvent schema doesn't have student_id field
+        if 'metadata' in event_data and event_data['metadata']:
+            metadata = event_data['metadata']
+            if isinstance(metadata, dict) and 'user_id' in metadata and metadata['user_id']:
+                entity_data['student_id'] = metadata['user_id']
+                logger.debug(f"Extracted student_id from metadata: {metadata['user_id']}")
+
         return entity_data
 
     async def _process_created_event(
