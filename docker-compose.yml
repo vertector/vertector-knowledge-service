@@ -1,10 +1,10 @@
 services:
   neo4j:
-    image: neo4j:5.23.0
+    image: neo4j:2025.10.1-community-bullseye
     container_name: neo4j-graphrag
     ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
     environment:
       # Authentication
       - NEO4J_AUTH=neo4j/graphrag_secure_password_2025
@@ -26,7 +26,7 @@ services:
 
     volumes:
       # Persistent data storage
-      - ./neo4j/data:/data
+      - neo4j_data:/data
       - ./neo4j/logs:/logs
       - ./neo4j/import:/var/lib/neo4j/import
       - ./neo4j/plugins:/plugins
@@ -35,7 +35,7 @@ services:
       - ./schema:/schema:ro
 
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1" ]
       interval: 10s
       timeout: 10s
       retries: 5
@@ -88,12 +88,12 @@ services:
       - ./logs:/app/logs
     networks:
       - graphrag-network
-      - vertector-nats-jetstream_microservices  # Connect to NATS network
+      - vertector-nats-jetstream_microservices # Connect to NATS network
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      test: [ "CMD-SHELL", "python -c 'import sys; sys.exit(0)'" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -105,10 +105,12 @@ services:
 volumes:
   huggingface_cache:
     driver: local
+  neo4j_data:
+    driver: local
 
 networks:
   graphrag-network:
     driver: bridge
     name: graphrag-network
   vertector-nats-jetstream_microservices:
-    external: true  # Reference external NATS network
+    external: true # Reference external NATS network
