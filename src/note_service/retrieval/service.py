@@ -39,8 +39,17 @@ class RetrievalService:
     """
     Production-ready retrieval service for academic note-taking system.
 
-    Dynamically generates retrieval queries using LLM + schema and executes
-    hybrid search (vector + full-text) with graph traversal enrichment.
+    Supports two modes based on LLM availability:
+
+    1. With LLM/API key: HybridCypherRetriever (vector + fulltext + cypher)
+       - Uses LLM to generate Cypher traversal queries
+       - Enriches results with graph relationship context
+       - Optimal for complex queries requiring related data
+
+    2. Without LLM: HybridRetriever (vector + fulltext only)
+       - Falls back to basic hybrid search
+       - Combines semantic (vector) and keyword (fulltext) search
+       - Still provides good results without graph enrichment
     """
 
     def __init__(
@@ -68,15 +77,27 @@ class RetrievalService:
             sample_size=1000,
         )
 
-        self.query_builder = DynamicQueryBuilder(
-            driver=driver,
-            schema_introspector=self.schema_introspector,
-            llm_model=settings.llm.model_name,
-            llm_temperature=settings.llm.temperature,
-            llm_api_key=google_api_key
-            or (settings.llm.api_key.get_secret_value() if settings.llm.api_key else None),
-            max_self_heal_attempts=3,
+        # Check if LLM is available for Cypher query generation
+        llm_api_key = google_api_key or (
+            settings.llm.api_key.get_secret_value() if settings.llm.api_key else None
         )
+        self.has_llm = llm_api_key is not None
+
+        if self.has_llm:
+            logger.info("LLM available - using HybridCypherRetriever (vector + fulltext + cypher)")
+            self.query_builder = DynamicQueryBuilder(
+                driver=driver,
+                schema_introspector=self.schema_introspector,
+                llm_model=settings.llm.model_name,
+                llm_temperature=settings.llm.temperature,
+                llm_api_key=llm_api_key,
+                max_self_heal_attempts=3,
+            )
+        else:
+            logger.warning(
+                "No LLM API key - falling back to HybridRetriever (vector + fulltext only)"
+            )
+            self.query_builder = None
 
         self.embedding_service = EmbeddingService(
             model_name=settings.embedding.model_name,
@@ -340,11 +361,19 @@ class RetrievalService:
         student_id: str = "",
     ) -> RetrievalResult:
         """
-        Execute hybrid search with dynamic query generation.
+        Execute hybrid search with automatic fallback based on LLM availability.
 
-        Combines vector + fulltext search, then uses LLM-generated Cypher
-        to traverse the graph and enrich results. Optionally filters by topics/tags.
-        Can re-rank results using chunk-level relevance for improved precision.
+        With LLM (HybridCypherRetriever):
+        - Vector search (semantic similarity)
+        - Fulltext search (keyword matching)
+        - Cypher traversal (graph relationships via LLM-generated queries)
+
+        Without LLM (HybridRetriever):
+        - Vector search (semantic similarity)
+        - Fulltext search (keyword matching)
+        - No graph traversal (graceful degradation)
+
+        Optionally filters by topics/tags and re-ranks using chunk-level relevance.
         """
         schema = self.schema_introspector.get_schema()
 
@@ -428,29 +457,7 @@ class RetrievalService:
             )
             return self._vector_search(query_text, top_k, initial_node_type)
 
-        query_gen_result = self.query_builder.build_hybrid_retrieval_query(
-            user_question=query_text,
-            initial_node_type=initial_node_type,
-            validate=True,
-            filter_topics=filter_topics,
-            filter_tags=filter_tags,
-            require_all=require_all_topics,
-            student_id=student_id,
-        )
-
-        if not query_gen_result.is_valid:
-            logger.error(
-                f"Failed to generate valid retrieval query: {query_gen_result.error_message}"
-            )
-            return RetrievalResult(
-                query=query_gen_result.query,
-                results=[],
-                num_results=0,
-                query_generation=query_gen_result,
-            )
-
         logger.info(f"Using vector index: {vector_index}, fulltext index: {fulltext_index}")
-        logger.debug(f"Generated retrieval query:\n{query_gen_result.query}")
 
         # Custom result formatter to extract all fields from Neo4j Record
         def format_record(record):
@@ -464,14 +471,53 @@ class RetrievalService:
                 metadata=result_data  # Add all fields as metadata
             )
 
-        retriever = HybridCypherRetriever(
-            driver=self.driver,
-            vector_index_name=vector_index,
-            fulltext_index_name=fulltext_index,
-            retrieval_query=query_gen_result.query,
-            embedder=self.neo4j_embedder,
-            result_formatter=format_record,
-        )
+        # Use HybridCypherRetriever if LLM is available, otherwise fall back to HybridRetriever
+        if self.has_llm and self.query_builder:
+            # Generate Cypher traversal query with LLM
+            query_gen_result = self.query_builder.build_hybrid_retrieval_query(
+                user_question=query_text,
+                initial_node_type=initial_node_type,
+                validate=True,
+                filter_topics=filter_topics,
+                filter_tags=filter_tags,
+                require_all=require_all_topics,
+                student_id=student_id,
+            )
+
+            if not query_gen_result.is_valid:
+                logger.error(
+                    f"Failed to generate valid retrieval query: {query_gen_result.error_message}"
+                )
+                return RetrievalResult(
+                    query=query_gen_result.query,
+                    results=[],
+                    num_results=0,
+                    query_generation=query_gen_result,
+                )
+
+            logger.info("Using HybridCypherRetriever (vector + fulltext + cypher)")
+            logger.debug(f"Generated retrieval query:\n{query_gen_result.query}")
+
+            retriever = HybridCypherRetriever(
+                driver=self.driver,
+                vector_index_name=vector_index,
+                fulltext_index_name=fulltext_index,
+                retrieval_query=query_gen_result.query,
+                embedder=self.neo4j_embedder,
+                result_formatter=format_record,
+            )
+        else:
+            # Fall back to HybridRetriever (vector + fulltext only, no Cypher traversal)
+            logger.info("Using HybridRetriever (vector + fulltext only, no Cypher)")
+            query_gen_result = None
+
+            retriever = HybridRetriever(
+                driver=self.driver,
+                vector_index_name=vector_index,
+                fulltext_index_name=fulltext_index,
+                embedder=self.neo4j_embedder,
+                result_formatter=format_record,
+            )
 
         search_results = retriever.search(query_text=query_text, top_k=top_k)
 
@@ -494,7 +540,7 @@ class RetrievalService:
             logger.info(f"Re-ranking complete. Final result count: {len(results)}")
 
         return RetrievalResult(
-            query=query_gen_result.query,
+            query=query_gen_result.query if query_gen_result else "HybridRetriever (no Cypher)",
             results=results,
             num_results=len(results),
             query_generation=query_gen_result,

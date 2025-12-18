@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Note Service CLI wrapper script
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
+
+# Run the CLI with uv
+cd "$PROJECT_ROOT"
+exec uv run python "$PROJECT_ROOT/src/note_service/cli.py" "$@"
