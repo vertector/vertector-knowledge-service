@@ -225,8 +225,16 @@ class NATSConsumer:
         # IMPORTANT: Some entities are SHARED and should NOT have student_id property:
         # - Course: Shared academic course (multiple students enrolled)
         # - Class_Schedule: Shared schedule for a course (same for all students)
-        # Student access to shared entities is via relationships, not properties
-        SHARED_ENTITIES = {"Course", "Class_Schedule"}
+        # - Topic: Universal academic concepts (e.g., "Dynamic Programming")
+        # - Resource: Shared references (textbooks, videos, articles)
+        #
+        # Student-specific entities (WITH student_id):
+        # - Assignment, Exam, Quiz, Lab_Session: Student's own work/grades
+        # - Study_Todo, Challenge_Area: Personal learning data
+        # - LectureNote: Student's own notes
+        #
+        # See docs/entity_ownership_analysis.md for full analysis
+        SHARED_ENTITIES = {"Course", "Class_Schedule", "Topic", "Resource"}
 
         if 'metadata' in event_data and event_data['metadata']:
             metadata = event_data['metadata']
