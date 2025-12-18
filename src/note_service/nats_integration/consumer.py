@@ -222,21 +222,24 @@ class NATSConsumer:
         # CRITICAL: Extract student_id from metadata.user_id for data isolation and linking
         # ASMS publishes student_id in metadata.user_id since event schemas don't have student_id field
         #
-        # IMPORTANT: Course nodes are SHARED ENTITIES and should NOT have student_id property
-        # Student enrollment is represented via ENROLLED_IN relationship, not Course properties
+        # IMPORTANT: Some entities are SHARED and should NOT have student_id property:
+        # - Course: Shared academic course (multiple students enrolled)
+        # - Class_Schedule: Shared schedule for a course (same for all students)
+        # Student access to shared entities is via relationships, not properties
+        SHARED_ENTITIES = {"Course", "Class_Schedule"}
+
         if 'metadata' in event_data and event_data['metadata']:
             metadata = event_data['metadata']
             if isinstance(metadata, dict) and 'user_id' in metadata and metadata['user_id']:
-                # Only add student_id to non-shared entities (NOT Course)
-                # Course is a shared entity accessed via Profile → ENROLLED_IN → Course
-                if entity_type != "Course":
+                # Only add student_id to non-shared entities
+                if entity_type not in SHARED_ENTITIES:
                     entity_data['student_id'] = metadata['user_id']
                     logger.debug(f"Extracted student_id from metadata: {metadata['user_id']}")
                 else:
-                    # For Course, store student_id separately for creating ENROLLED_IN relationship
-                    # but DON'T add it to entity_data (it shouldn't be a Course property)
+                    # For shared entities, store student_id separately for creating relationships
+                    # but DON'T add it to entity_data (it shouldn't be a node property)
                     entity_data['_enrollment_student_id'] = metadata['user_id']
-                    logger.debug(f"Stored enrollment student_id for Course (will not be saved as Course property)")
+                    logger.debug(f"Stored enrollment student_id for {entity_type} (will not be saved as property)")
 
         return entity_data
 
