@@ -202,12 +202,13 @@ class NATSConsumer:
             for _ in range(remove_count):
                 self.processed_event_ids.pop()
 
-    def _extract_entity_data(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_entity_data(self, event_data: Dict[str, Any], entity_type: str) -> Dict[str, Any]:
         """
         Extract entity data from event payload.
 
         Args:
             event_data: Full event payload
+            entity_type: Type of entity being created (Course, Assignment, etc.)
 
         Returns:
             Entity data suitable for DataLoader
@@ -219,12 +220,23 @@ class NATSConsumer:
         }
 
         # CRITICAL: Extract student_id from metadata.user_id for data isolation and linking
-        # ASMS publishes student_id in metadata.user_id since CourseCreatedEvent schema doesn't have student_id field
+        # ASMS publishes student_id in metadata.user_id since event schemas don't have student_id field
+        #
+        # IMPORTANT: Course nodes are SHARED ENTITIES and should NOT have student_id property
+        # Student enrollment is represented via ENROLLED_IN relationship, not Course properties
         if 'metadata' in event_data and event_data['metadata']:
             metadata = event_data['metadata']
             if isinstance(metadata, dict) and 'user_id' in metadata and metadata['user_id']:
-                entity_data['student_id'] = metadata['user_id']
-                logger.debug(f"Extracted student_id from metadata: {metadata['user_id']}")
+                # Only add student_id to non-shared entities (NOT Course)
+                # Course is a shared entity accessed via Profile → ENROLLED_IN → Course
+                if entity_type != "Course":
+                    entity_data['student_id'] = metadata['user_id']
+                    logger.debug(f"Extracted student_id from metadata: {metadata['user_id']}")
+                else:
+                    # For Course, store student_id separately for creating ENROLLED_IN relationship
+                    # but DON'T add it to entity_data (it shouldn't be a Course property)
+                    entity_data['_enrollment_student_id'] = metadata['user_id']
+                    logger.debug(f"Stored enrollment student_id for Course (will not be saved as Course property)")
 
         return entity_data
 
@@ -240,7 +252,7 @@ class NATSConsumer:
             entity_type: Type of entity (Course, Assignment, etc.)
             event_data: Event payload
         """
-        entity_data = self._extract_entity_data(event_data)
+        entity_data = self._extract_entity_data(event_data, entity_type)
 
         # Use DataAdapter to create entity with automatic embedding generation
         if self.config.enable_auto_embeddings:
@@ -256,8 +268,8 @@ class NATSConsumer:
                 entity_data=entity_data
             )
 
-        # Special handling: If Course has student_id, create implicit ENROLLED_IN relationship
-        if entity_type == "Course" and "student_id" in entity_data:
+        # Special handling: If Course has enrollment student_id, create implicit ENROLLED_IN relationship
+        if entity_type == "Course" and "_enrollment_student_id" in entity_data:
             await self._create_enrollment_from_course(entity_data)
 
     async def _process_updated_event(
@@ -425,15 +437,15 @@ class NATSConsumer:
         course_data: Dict[str, Any]
     ) -> None:
         """
-        Create implicit ENROLLED_IN relationship when Course has student_id.
+        Create implicit ENROLLED_IN relationship when Course has enrollment student_id.
 
-        When Academic Schedule Management creates a Course with student_id,
+        When Academic Schedule Management creates a Course for a student,
         it automatically means the student is enrolled in that course.
 
         Args:
-            course_data: Course entity data containing student_id and course_id
+            course_data: Course entity data containing _enrollment_student_id and course_id
         """
-        student_id = course_data.get('student_id')
+        student_id = course_data.get('_enrollment_student_id')
         course_id = course_data.get('course_id')
 
         if not student_id or not course_id:
